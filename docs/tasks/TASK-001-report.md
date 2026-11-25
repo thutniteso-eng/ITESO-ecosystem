@@ -145,5 +145,8 @@ Time:        2.386 s, estimated 3 s
 
 ## Vấn đề còn tồn tại / câu hỏi cho Claude
 
+- **GitHub Actions CI chưa khởi chạy được do giới hạn Billing của tài khoản GitHub:** Khi mở PR #1, GitHub Actions trả lỗi ở cấp runner trước khi chạy bất kỳ bước nào:
+  > *"The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"*
+  Cần Product Owner kiểm tra lại mục **Billing & plans** của tài khoản `thutniteso-eng` trên GitHub (hoặc bật/cấu hình self-hosted runner nếu dùng repo private), sau đó bấm **Re-run all jobs** trên PR #1. Toàn bộ các bước trong CI (`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `make up`, `make test`, kiểm tra endpoint và tắt database manager) đã chạy xanh cục bộ trên WSL2.
 - Khi bật `proxy_mode = True` trên Odoo 20, mặc định Odoo chỉ lắng nghe `127.0.0.1:8069` nên đã khai báo tường minh `http_interface = 0.0.0.0` trong `infra/odoo/odoo.conf` để `gateway` và host kết nối được.
 - `README.md` ở nhánh `main` giữ nguyên văn theo yêu cầu; sau khi PR TASK-001 được merge, có thể cập nhật mục "Chạy môi trường dev" trong `README.md` ở task tiếp theo nếu Claude/PO muốn.
