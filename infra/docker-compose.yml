@@ -80,13 +80,18 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       CONTROL_PLANE_PORT: 3100
-      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN is required in .env}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_CONTROL_PLANE_USER: ${POSTGRES_CONTROL_PLANE_USER:-iteso_control_plane}
       POSTGRES_CONTROL_PLANE_PASSWORD: ${POSTGRES_CONTROL_PLANE_PASSWORD:?POSTGRES_CONTROL_PLANE_PASSWORD is required in .env}
       PLATFORM_DB: ${PLATFORM_DB:-platform}
       NATS_URL: nats://nats:4222
+      PLATFORM_ENCRYPTION_KEY: ${PLATFORM_ENCRYPTION_KEY:?PLATFORM_ENCRYPTION_KEY is required in .env}
+      DEMO_ACCOUNTS_PASSWORD: ${DEMO_ACCOUNTS_PASSWORD:-Admin@123456}
+      JWT_KEY_ID: ${JWT_KEY_ID:-iteso-ed25519-key-1}
+      JWT_PRIVATE_KEY_PATH: /app/secrets/ed25519_private.pem
+    volumes:
+      - ./secrets/ed25519_private.pem:/app/secrets/ed25519_private.pem:ro
     ports:
       - "127.0.0.1:${CONTROL_PLANE_PORT:-3100}:3100"
     healthcheck:
@@ -127,6 +132,11 @@ services:
       ODOO_DEV_API_KEY: ${ODOO_DEV_API_KEY:-}
       NATS_URL: nats://nats:4222
       REDIS_URL: redis://redis:6379
+      CONTROL_PLANE_URL: http://control-plane:3100
+      JWT_KEY_ID: ${JWT_KEY_ID:-iteso-ed25519-key-1}
+      JWT_PUBLIC_KEY_PATH: /app/secrets/ed25519_public.pem
+    volumes:
+      - ./secrets/ed25519_public.pem:/app/secrets/ed25519_public.pem:ro
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-3000}:3000"
     healthcheck:

@@ -8,6 +8,8 @@ up:
 		echo "ERROR: .env not found. Run: cp .env.example .env"; \
 		exit 1; \
 	fi
+	./scripts/generate-keys.sh
+	$(COMPOSE) build control-plane
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
 	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
@@ -23,7 +25,9 @@ reset:
 		echo "ERROR: .env not found. Run: cp .env.example .env"; \
 		exit 1; \
 	fi
+	./scripts/generate-keys.sh
 	$(COMPOSE) down -v --remove-orphans
+	$(COMPOSE) build control-plane
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
 	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
@@ -34,11 +38,17 @@ reset:
 seed:
 	@echo "Dữ liệu nhà hàng mẫu sẽ có ở task sau."
 
+create-platform-admin:
+	@read -p "Email: " email; \
+	read -s -p "Password: " password; echo ""; \
+	$(COMPOSE) run --rm control-plane node dist/cli/create-platform-admin.js --email "$$email" --password "$$password"
+
 test:
 	pnpm --filter @iteso/control-plane test
 	pnpm --filter @iteso/gateway test
 	./scripts/test-db-isolation.sh
 	./scripts/test-odoo-module.sh
+	node ./scripts/test-acceptance-criteria.js
 
 ps:
 	$(COMPOSE) ps

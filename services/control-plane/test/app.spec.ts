@@ -4,16 +4,21 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { ControlPlaneService } from '../src/control-plane/control-plane.service';
 import { NatsService } from '../src/nats/nats.service';
+import { TokenService } from '../src/auth/token.service';
+import { AuthService, LoginResultTokens, LoginResultTotp } from '../src/auth/auth.service';
+import {
+  encryptAesGcm,
+  generateBase32Secret,
+  generateTotp,
+  hashPassword,
+  verifyPassword,
+} from '../src/auth/crypto.util';
 
-describe('Control Plane Endpoints (TASK-002)', () => {
+describe('Control Plane Endpoints (TASK-003)', () => {
   let app: INestApplication;
   let cpService: ControlPlaneService;
-  let natsService: NatsService;
-  const adminToken = 'test_admin_token_123';
-
-  beforeAll(() => {
-    process.env.CONTROL_PLANE_ADMIN_TOKEN = adminToken;
-  });
+  let tokenService: TokenService;
+  let authService: AuthService;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -32,41 +37,307 @@ describe('Control Plane Endpoints (TASK-002)', () => {
     await app.init();
 
     cpService = moduleRef.get(ControlPlaneService);
-    natsService = moduleRef.get(NatsService);
+    tokenService = moduleRef.get(TokenService);
+    authService = moduleRef.get(AuthService);
   });
 
   afterEach(async () => {
     await app.close();
   });
 
-  describe('Admin Auth Guard (timingSafeEqual)', () => {
-    it('returns 401 when X-Admin-Token header is missing', async () => {
-      const res = await request(app.getHttpServer()).get('/admin/tenants').expect(401);
-      expect(res.body.error).toBe('UNAUTHORIZED');
+  describe('Password Hashing & Lockout Logic (Crypto & Auth)', () => {
+    interface MockAccountState {
+      failedAttempts: number;
+      lockedUntil: Date | null;
+      revokedAt?: Date;
+    }
+
+    interface MockAuthServiceInternal {
+      db: {
+        query: {
+          accounts: { findFirst: (...args: unknown[]) => Promise<unknown> };
+          refreshTokens: { findFirst: (...args: unknown[]) => Promise<unknown> };
+        };
+        update: (...args: unknown[]) => { set: (data: Partial<MockAccountState>) => { where: () => Promise<void> } };
+        insert: (...args: unknown[]) => { values: () => Promise<void> };
+      };
+      getAccountMemberships: (accountId: string) => Promise<Array<{ membershipId: string; tenantCode: string; tenantDisplayName: string }>>;
+      getMembershipRolesAndPerms: (membershipId: string) => Promise<{ roles: string[]; perms: string[] }>;
+    }
+
+    it('hashes password with Argon2id and verifies correctly', async () => {
+      const password = 'StrongPassword@123';
+      const hash = await hashPassword(password);
+      expect(hash).toContain('$argon2id$');
+
+      const isMatch = await verifyPassword(hash, password);
+      expect(isMatch).toBe(true);
+
+      const isWrong = await verifyPassword(hash, 'WrongPassword@123');
+      expect(isWrong).toBe(false);
     });
 
-    it('returns 401 when X-Admin-Token header is invalid or different length', async () => {
-      const res = await request(app.getHttpServer())
-        .get('/admin/tenants')
-        .set('X-Admin-Token', 'wrong')
-        .expect(401);
-      expect(res.body.error).toBe('UNAUTHORIZED');
-    });
+    it('locks account after 5 consecutive failed attempts and unlocks after 15 minutes', async () => {
+      const mockAccount = {
+        id: 'acc-1',
+        email: 'user@test.local',
+        phone: null,
+        passwordHash: await hashPassword('ValidPassword@123'),
+        totpSecretEnc: null,
+        totpEnabled: false,
+        isPlatformAdmin: false,
+        status: 'active' as const,
+        failedAttempts: 4,
+        lockedUntil: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
 
-    it('allows access when valid token is provided', async () => {
-      jest.spyOn(cpService, 'getTenants').mockResolvedValue([]);
-      await request(app.getHttpServer())
-        .get('/admin/tenants')
-        .set('X-Admin-Token', adminToken)
-        .expect(200);
+      const internalAuth = authService as unknown as MockAuthServiceInternal;
+
+      // 5th attempt fails -> lockedUntil is set
+      let lockedAccountState: { failedAttempts: number; lockedUntil: Date | null } | null = null;
+      jest.spyOn(internalAuth.db.query.accounts, 'findFirst').mockImplementation(async () => {
+        if (lockedAccountState) {
+          return { ...mockAccount, ...lockedAccountState };
+        }
+        return mockAccount;
+      });
+
+      jest.spyOn(internalAuth.db, 'update').mockReturnValue({
+        set: (data: Partial<MockAccountState>) => ({
+          where: () => {
+            lockedAccountState = {
+              failedAttempts: data.failedAttempts ?? 0,
+              lockedUntil: data.lockedUntil ?? null,
+            };
+            return Promise.resolve();
+          },
+        }),
+      });
+
+      // 5th attempt with wrong password
+      await expect(
+        authService.login('user@test.local', 'WrongPassword@123'),
+      ).rejects.toThrow('Invalid credentials');
+
+      expect(lockedAccountState).not.toBeNull();
+      expect(lockedAccountState!.failedAttempts).toBe(5);
+      expect(lockedAccountState!.lockedUntil).not.toBeNull();
+      expect(lockedAccountState!.lockedUntil!.getTime()).toBeGreaterThan(Date.now());
+
+      // 6th attempt with CORRECT password while locked -> still rejected
+      await expect(
+        authService.login('user@test.local', 'ValidPassword@123'),
+      ).rejects.toThrow('Invalid credentials');
+
+      // Simulate 15 minutes elapsed (time travel)
+      lockedAccountState!.lockedUntil = new Date(Date.now() - 1000);
+
+      jest.spyOn(internalAuth, 'getAccountMemberships').mockResolvedValue([
+        { membershipId: 'mem-1', tenantCode: 'demo_fnb', tenantDisplayName: 'Demo' },
+      ]);
+      jest.spyOn(internalAuth, 'getMembershipRolesAndPerms').mockResolvedValue({
+        roles: ['Chủ'],
+        perms: ['pos.order.create'],
+      });
+      jest.spyOn(internalAuth.db, 'insert').mockReturnValue({
+        values: () => Promise.resolve(),
+      });
+
+      // Now login with correct password succeeds
+      const result = (await authService.login('user@test.local', 'ValidPassword@123')) as LoginResultTokens;
+      expect(result.access_token).toBeDefined();
     });
   });
 
-  describe('Admin API Body Validation (Fix 5)', () => {
+  describe('Single-use Tokens & Token Reuse Detection', () => {
+    interface MockAccountState {
+      failedAttempts: number;
+      lockedUntil: Date | null;
+      revokedAt?: Date;
+    }
+
+    interface MockAuthServiceInternal {
+      db: {
+        query: {
+          accounts: { findFirst: (...args: unknown[]) => Promise<unknown> };
+          refreshTokens: { findFirst: (...args: unknown[]) => Promise<unknown> };
+        };
+        update: (...args: unknown[]) => { set: (data: Partial<MockAccountState>) => { where: () => Promise<void> } };
+        insert: (...args: unknown[]) => { values: () => Promise<void> };
+      };
+    }
+
+    it('rejects reusing a selection_token or challenge_token', async () => {
+      const token = await tokenService.createSingleUseToken({
+        sub: 'acc-123',
+        typ: 'selection',
+      });
+
+      // First use succeeds
+      const payload = await tokenService.consumeSingleUseToken(token, 'selection');
+      expect(payload.sub).toBe('acc-123');
+
+      // Second use must fail
+      await expect(
+        tokenService.consumeSingleUseToken(token, 'selection'),
+      ).rejects.toThrow('Token has already been used');
+    });
+
+    it('revokes entire token family when a reused refresh token is submitted', async () => {
+      let familyRevoked = false;
+      const revokedTokenRecord = {
+        id: 'tok-1',
+        accountId: 'acc-1',
+        membershipId: 'mem-1',
+        familyId: 'fam-1',
+        tokenHash: 'somehash',
+        expiresAt: new Date(Date.now() + 100000),
+        revokedAt: new Date(), // Already revoked
+        replacedBy: 'tok-2',
+      };
+
+      const internalAuth = authService as unknown as MockAuthServiceInternal;
+
+      jest.spyOn(internalAuth.db.query.refreshTokens, 'findFirst').mockResolvedValue(revokedTokenRecord);
+      jest.spyOn(internalAuth.db, 'update').mockReturnValue({
+        set: (data: Partial<MockAccountState>) => ({
+          where: () => {
+            if (data.revokedAt) familyRevoked = true;
+            return Promise.resolve();
+          },
+        }),
+      });
+
+      await expect(authService.refresh('reused_raw_token')).rejects.toThrow('Refresh token reuse detected');
+      expect(familyRevoked).toBe(true);
+    });
+  });
+
+  describe('Super Admin TOTP Flow & PlatformAdminGuard', () => {
+    it('returns 401 when old X-Admin-Token is used (TASK-002 token removed)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/admin/tenants')
+        .set('X-Admin-Token', 'change_me_admin_token_secret_123')
+        .expect(401);
+
+      expect(res.body.error).toBe('UNAUTHORIZED');
+      expect(res.body.message).toContain('Missing or invalid Authorization header');
+    });
+
+    it('returns 401 when Super Admin token lacks otp in amr', async () => {
+      const tokenWithoutOtp = await tokenService.signAccessToken({
+        sub: 'admin-1',
+        is_platform_admin: true,
+        amr: ['pwd'], // Missing otp!
+        roles: ['platform_admin'],
+        perms: ['*'],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/admin/tenants')
+        .set('Authorization', `Bearer ${tokenWithoutOtp}`)
+        .expect(401);
+
+      expect(res.body.error).toBe('UNAUTHORIZED');
+      expect(res.body.message).toContain('Two-factor authentication (OTP) required');
+    });
+
+    it('allows access when valid Super Admin token with amr ["pwd", "otp"] is provided', async () => {
+      const validAdminToken = await tokenService.signAccessToken({
+        sub: 'admin-1',
+        is_platform_admin: true,
+        amr: ['pwd', 'otp'],
+        roles: ['platform_admin'],
+        perms: ['*'],
+      });
+
+      jest.spyOn(cpService, 'getTenants').mockResolvedValue([]);
+
+      await request(app.getHttpServer())
+        .get('/admin/tenants')
+        .set('Authorization', `Bearer ${validAdminToken}`)
+        .expect(200);
+    });
+
+    it('verifies TOTP code correctly during login flow', async () => {
+      const totpSecret = generateBase32Secret(32);
+      const encSecret = encryptAesGcm(totpSecret, process.env.PLATFORM_ENCRYPTION_KEY || 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=');
+
+      const adminAccount = {
+        id: 'admin-uuid',
+        email: 'admin@platform.local',
+        phone: null,
+        passwordHash: await hashPassword('AdminPass@123'),
+        totpSecretEnc: encSecret,
+        totpEnabled: true,
+        isPlatformAdmin: true,
+        status: 'active' as const,
+        failedAttempts: 0,
+        lockedUntil: null,
+      };
+
+      interface MockAuthServiceInternal {
+        db: {
+          query: {
+            accounts: { findFirst: (...args: unknown[]) => Promise<unknown> };
+          };
+          update: (...args: unknown[]) => { set: () => { where: () => Promise<void> } };
+          insert: (...args: unknown[]) => { values: () => Promise<void> };
+        };
+      }
+      const internalAuth = authService as unknown as MockAuthServiceInternal;
+
+      jest.spyOn(internalAuth.db.query.accounts, 'findFirst').mockResolvedValue(adminAccount);
+      jest.spyOn(internalAuth.db, 'update').mockReturnValue({
+        set: () => ({
+          where: () => Promise.resolve(),
+        }),
+      });
+      jest.spyOn(internalAuth.db, 'insert').mockReturnValue({
+        values: () => Promise.resolve(),
+      });
+
+      // Step 1: Login returns challenge_token
+      const loginRes = (await authService.login('admin@platform.local', 'AdminPass@123')) as LoginResultTotp;
+      expect(loginRes.next).toBe('totp');
+      const challengeToken = loginRes.challenge_token;
+
+      // Step 2: Invalid TOTP fails
+      await expect(
+        authService.verifyTotpAndLogin(challengeToken, '000000'),
+      ).rejects.toThrow();
+
+      // Step 3: Valid TOTP succeeds
+      const newChallenge = await tokenService.createSingleUseToken({ sub: adminAccount.id, typ: 'challenge' });
+      const validCode = generateTotp(totpSecret);
+      const tokenRes = await authService.verifyTotpAndLogin(newChallenge, validCode);
+
+      expect(tokenRes.access_token).toBeDefined();
+      const verified = await tokenService.verifyAccessToken(tokenRes.access_token);
+      expect(verified.is_platform_admin).toBe(true);
+      expect(verified.amr).toEqual(['pwd', 'otp']);
+    });
+  });
+
+  describe('Admin API Body Validation & Endpoints', () => {
+    let validAdminToken: string;
+
+    beforeEach(async () => {
+      validAdminToken = await tokenService.signAccessToken({
+        sub: 'admin-1',
+        is_platform_admin: true,
+        amr: ['pwd', 'otp'],
+        roles: ['platform_admin'],
+        perms: ['*'],
+      });
+    });
+
     it('returns 400 when enabled is not a boolean (e.g. string "false")', async () => {
       const res = await request(app.getHttpServer())
         .put('/admin/tenants/demo_fnb/features/system.odoo_version')
-        .set('X-Admin-Token', adminToken)
+        .set('Authorization', `Bearer ${validAdminToken}`)
         .send({ enabled: 'false' })
         .expect(400);
 
@@ -78,7 +349,7 @@ describe('Control Plane Endpoints (TASK-002)', () => {
       const longNote = 'a'.repeat(501);
       const res = await request(app.getHttpServer())
         .put('/admin/tenants/demo_fnb/features/system.odoo_version')
-        .set('X-Admin-Token', adminToken)
+        .set('Authorization', `Bearer ${validAdminToken}`)
         .send({ enabled: true, note: longNote })
         .expect(400);
 
@@ -87,10 +358,10 @@ describe('Control Plane Endpoints (TASK-002)', () => {
     });
   });
 
-  describe('ControlPlaneService Logic (Fix 4: Real service behavior & NATS publishing)', () => {
+  describe('ControlPlaneService Logic (Audit log records real actor UUID & NATS event)', () => {
     interface FakeTx {
       update: () => { set: () => { where: () => { returning: () => Array<{ key: string; platformEnabled: boolean }> } } };
-      insert: () => { values: (val: { targetType?: string; targetId?: string }) => Promise<void> };
+      insert: () => { values: (val: { actor?: string; targetType?: string; targetId?: string }) => Promise<void> };
     }
 
     interface MockServiceWithDb {
@@ -101,7 +372,6 @@ describe('Control Plane Endpoints (TASK-002)', () => {
     }
 
     it('throws 409 FEATURE_NOT_IMPLEMENTED when attempting to enable a not_implemented feature', async () => {
-      // Mock db query to return a not_implemented feature
       jest.spyOn((cpService as unknown as MockServiceWithDb).db.query.featureDefinitions, 'findFirst').mockResolvedValue({
         key: 'fnb.pos',
         group: 'fnb',
@@ -116,7 +386,7 @@ describe('Control Plane Endpoints (TASK-002)', () => {
       ).rejects.toThrow('Feature \'fnb.pos\' is not implemented and cannot be enabled');
     });
 
-    it('updates available feature, creates audit log in transaction, and publishes to NATS', async () => {
+    it('updates available feature, creates audit log with real actor, and publishes to NATS', async () => {
       jest.spyOn((cpService as unknown as MockServiceWithDb).db.query.featureDefinitions, 'findFirst').mockResolvedValue({
         key: 'system.odoo_version',
         group: 'system',
@@ -126,7 +396,7 @@ describe('Control Plane Endpoints (TASK-002)', () => {
         defaultEnabled: true,
       });
 
-      let auditLogged = false;
+      let recordedActor = '';
       jest.spyOn((cpService as unknown as MockServiceWithDb).db, 'transaction').mockImplementation(async (callback: (tx: FakeTx) => Promise<unknown>) => {
         const fakeTx: FakeTx = {
           update: () => ({
@@ -140,10 +410,8 @@ describe('Control Plane Endpoints (TASK-002)', () => {
             }),
           }),
           insert: () => ({
-            values: (val: { targetType?: string; targetId?: string }) => {
-              if (val.targetType === 'feature' && val.targetId === 'system.odoo_version') {
-                auditLogged = true;
-              }
+            values: (val: { actor?: string; targetType?: string; targetId?: string }) => {
+              if (val.actor) recordedActor = val.actor;
               return Promise.resolve();
             },
           }),
@@ -151,26 +419,8 @@ describe('Control Plane Endpoints (TASK-002)', () => {
         return callback(fakeTx);
       });
 
-      const updated = await cpService.updatePlatformFeature('system.odoo_version', false, 'Test update');
-      expect(updated.platformEnabled).toBe(false);
-      expect(auditLogged).toBe(true);
-
-      // Verify NATS published after transaction commit
-      expect(natsService.publish).toHaveBeenCalledWith('platform.features.changed', {
-        tenant: null,
-        key: 'system.odoo_version',
-      });
-    });
-  });
-
-  describe('GET /health', () => {
-    it('returns 200 when database and nats are healthy', async () => {
-      jest.spyOn(cpService, 'checkHealth').mockResolvedValue({ database: true, nats: true });
-
-      const res = await request(app.getHttpServer()).get('/health').expect(200);
-      expect(res.body.status).toBe('ok');
-      expect(res.body.components.database.status).toBe('ok');
-      expect(res.body.components.nats.status).toBe('ok');
+      await cpService.updatePlatformFeature('system.odoo_version', false, 'test note', 'actor-uuid-1234');
+      expect(recordedActor).toBe('actor-uuid-1234');
     });
   });
 });

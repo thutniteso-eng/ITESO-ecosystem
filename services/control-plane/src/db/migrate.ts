@@ -16,7 +16,7 @@ export async function grantGatewayPermissions(pgPool: Pool): Promise<void> {
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iteso_gateway') THEN
         GRANT USAGE ON SCHEMA public TO iteso_gateway;
         GRANT SELECT ON TABLE "tenants", "feature_definitions", "tenant_features" TO iteso_gateway;
-        REVOKE ALL ON TABLE "admin_audit_log" FROM iteso_gateway;
+        REVOKE ALL ON TABLE "admin_audit_log", "accounts", "permissions", "roles", "role_permissions", "memberships", "membership_roles", "refresh_tokens" FROM iteso_gateway;
       END IF;
     END $$;
   `);

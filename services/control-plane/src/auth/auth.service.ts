@@ -1,0 +1,600 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { eq, and, or, inArray, sql } from 'drizzle-orm';
+import { Pool } from 'pg';
+import * as schema from '../db/schema';
+import {
+  decryptAesGcm,
+  generateRandomToken,
+  sha256,
+  verifyPassword,
+  verifyTotp,
+} from './crypto.util';
+import { AccessTokenPayload, TokenService } from './token.service';
+
+export interface LoginResultTokens {
+  access_token: string;
+  refresh_token: string;
+  token_type: 'Bearer';
+  expires_in: number;
+}
+
+export interface LoginResultSelectTenant {
+  next: 'select_tenant';
+  selection_token: string;
+  tenants: Array<{ code: string; displayName: string }>;
+}
+
+export interface LoginResultTotp {
+  next: 'totp';
+  challenge_token: string;
+}
+
+export type LoginResult = LoginResultTokens | LoginResultSelectTenant | LoginResultTotp;
+
+@Injectable()
+export class AuthService {
+  private readonly db: NodePgDatabase<typeof schema>;
+  private readonly pgPool: Pool;
+  private readonly encryptionKey: string;
+
+  constructor(private readonly tokenService: TokenService) {
+    this.pgPool = new Pool({
+      host: process.env.POSTGRES_HOST ?? 'postgres',
+      port: Number(process.env.POSTGRES_PORT ?? 5432),
+      user: process.env.POSTGRES_CONTROL_PLANE_USER ?? 'iteso_control_plane',
+      password: process.env.POSTGRES_CONTROL_PLANE_PASSWORD ?? '',
+      database: process.env.PLATFORM_DB ?? 'platform',
+      connectionTimeoutMillis: 3000,
+    });
+    this.db = drizzle(this.pgPool, { schema });
+    this.encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY || 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
+  }
+
+  async login(identifier?: string, password?: string): Promise<LoginResult> {
+    if (!identifier || typeof identifier !== 'string' || !password || typeof password !== 'string') {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Identifier and password are required',
+      });
+    }
+
+    if (password.length < 10) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Password must be at least 10 characters',
+      });
+    }
+
+    // Find account by email or phone
+    const cleanId = identifier.trim().toLowerCase();
+    const account = await this.db.query.accounts.findFirst({
+      where: or(eq(schema.accounts.email, cleanId), eq(schema.accounts.phone, cleanId)),
+    });
+
+    if (!account) {
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Check account lock
+    const now = new Date();
+    if (account.lockedUntil && account.lockedUntil > now) {
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Check account status
+    if (account.status !== 'active') {
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Verify password
+    const passwordValid = await verifyPassword(account.passwordHash, password);
+    if (!passwordValid) {
+      const failedAttempts = account.failedAttempts + 1;
+      let lockedUntil: Date | null = null;
+      if (failedAttempts >= 5) {
+        lockedUntil = new Date(Date.now() + 15 * 60 * 1000); // lock 15 mins
+      }
+
+      await this.db
+        .update(schema.accounts)
+        .set({
+          failedAttempts,
+          lockedUntil,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.accounts.id, account.id));
+
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Reset failed attempts on success
+    await this.db
+      .update(schema.accounts)
+      .set({
+        failedAttempts: 0,
+        lockedUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.accounts.id, account.id));
+
+    // Handle Super Admin
+    if (account.isPlatformAdmin) {
+      const challengeToken = await this.tokenService.createSingleUseToken({
+        sub: account.id,
+        typ: 'challenge',
+      });
+      return {
+        next: 'totp',
+        challenge_token: challengeToken,
+      };
+    }
+
+    // Regular account: find active memberships and active tenants
+    const memberships = await this.getAccountMemberships(account.id);
+
+    if (memberships.length === 0) {
+      throw new ForbiddenException({
+        error: 'NO_ACTIVE_MEMBERSHIP',
+        message: 'Account has no active tenant memberships',
+      });
+    }
+
+    if (memberships.length > 1) {
+      const selectionToken = await this.tokenService.createSingleUseToken({
+        sub: account.id,
+        typ: 'selection',
+      });
+
+      return {
+        next: 'select_tenant',
+        selection_token: selectionToken,
+        tenants: memberships.map((m) => ({
+          code: m.tenantCode,
+          displayName: m.tenantDisplayName,
+        })),
+      };
+    }
+
+    // Exactly 1 membership
+    const chosenMembership = memberships[0];
+    return this.issueTokensForMembership(account, chosenMembership.membershipId, chosenMembership.tenantCode);
+  }
+
+  async selectTenant(selectionToken?: string, tenantCode?: string): Promise<LoginResultTokens> {
+    if (!selectionToken || !tenantCode) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'selection_token and tenant are required',
+      });
+    }
+
+    let payload;
+    try {
+      payload = await this.tokenService.consumeSingleUseToken(selectionToken, 'selection');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Invalid or expired selection token';
+      throw new UnauthorizedException({
+        error: 'INVALID_SELECTION_TOKEN',
+        message: msg,
+      });
+    }
+
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, payload.sub),
+    });
+
+    if (!account || account.status !== 'active') {
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Account not active',
+      });
+    }
+
+    const memberships = await this.getAccountMemberships(account.id);
+    const chosen = memberships.find((m) => m.tenantCode === tenantCode);
+
+    if (!chosen) {
+      throw new ForbiddenException({
+        error: 'TENANT_NOT_ALLOWED',
+        message: `Account is not a member of tenant '${tenantCode}'`,
+      });
+    }
+
+    return this.issueTokensForMembership(account, chosen.membershipId, chosen.tenantCode);
+  }
+
+  async verifyTotpAndLogin(challengeToken?: string, code?: string): Promise<LoginResultTokens> {
+    if (!challengeToken || !code) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'challenge_token and code are required',
+      });
+    }
+
+    let payload;
+    try {
+      payload = await this.tokenService.consumeSingleUseToken(challengeToken, 'challenge');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Invalid or expired challenge token';
+      throw new UnauthorizedException({
+        error: 'INVALID_CHALLENGE_TOKEN',
+        message: msg,
+      });
+    }
+
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, payload.sub),
+    });
+
+    if (!account || !account.isPlatformAdmin || account.status !== 'active') {
+      throw new UnauthorizedException({
+        error: 'UNAUTHORIZED',
+        message: 'Invalid platform admin account',
+      });
+    }
+
+    if (!account.totpSecretEnc) {
+      throw new UnauthorizedException({
+        error: 'TOTP_NOT_CONFIGURED',
+        message: 'TOTP secret is not configured for platform admin',
+      });
+    }
+
+    const totpSecret = decryptAesGcm(account.totpSecretEnc, this.encryptionKey);
+    const valid = verifyTotp(code.trim(), totpSecret);
+
+    if (!valid) {
+      throw new UnauthorizedException({
+        error: 'INVALID_TOTP_CODE',
+        message: 'Invalid or expired TOTP code',
+      });
+    }
+
+    // Issue platform admin token
+    const accessTokenPayload: AccessTokenPayload = {
+      sub: account.id,
+      email: account.email ?? undefined,
+      phone: account.phone ?? undefined,
+      is_platform_admin: true,
+      amr: ['pwd', 'otp'],
+      roles: ['platform_admin'],
+      perms: ['*'],
+    };
+
+    const accessToken = await this.tokenService.signAccessToken(accessTokenPayload);
+    const rawRefreshToken = generateRandomToken(32);
+    const tokenHash = sha256(rawRefreshToken);
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+    await this.db.insert(schema.refreshTokens).values({
+      accountId: account.id,
+      membershipId: null,
+      familyId: sql`gen_random_uuid()`,
+      tokenHash,
+      expiresAt,
+    });
+
+    return {
+      access_token: accessToken,
+      refresh_token: rawRefreshToken,
+      token_type: 'Bearer',
+      expires_in: 900,
+    };
+  }
+
+  async refresh(rawRefreshToken?: string): Promise<LoginResultTokens> {
+    if (!rawRefreshToken || typeof rawRefreshToken !== 'string') {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'refresh_token is required',
+      });
+    }
+
+    const tokenHash = sha256(rawRefreshToken.trim());
+    const tokenRecord = await this.db.query.refreshTokens.findFirst({
+      where: eq(schema.refreshTokens.tokenHash, tokenHash),
+    });
+
+    if (!tokenRecord) {
+      throw new UnauthorizedException({
+        error: 'INVALID_REFRESH_TOKEN',
+        message: 'Invalid refresh token',
+      });
+    }
+
+    // Reuse detection: If token was already revoked or replaced, revoke entire family!
+    if (tokenRecord.revokedAt || tokenRecord.replacedBy) {
+      await this.db
+        .update(schema.refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.refreshTokens.familyId, tokenRecord.familyId));
+
+      throw new UnauthorizedException({
+        error: 'TOKEN_REUSE_DETECTED',
+        message: 'Refresh token reuse detected. All tokens revoked.',
+      });
+    }
+
+    // Check expiration
+    if (tokenRecord.expiresAt < new Date()) {
+      throw new UnauthorizedException({
+        error: 'REFRESH_TOKEN_EXPIRED',
+        message: 'Refresh token has expired',
+      });
+    }
+
+    // Check account status
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, tokenRecord.accountId),
+    });
+
+    if (!account || account.status !== 'active') {
+      throw new UnauthorizedException({
+        error: 'ACCOUNT_DISABLED',
+        message: 'Account is disabled or does not exist',
+      });
+    }
+
+    // Generate new refresh token
+    const newRawRefreshToken = generateRandomToken(32);
+    const newTokenHash = sha256(newRawRefreshToken);
+    const newExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    let newAccessToken: string;
+
+    if (tokenRecord.membershipId) {
+      const membership = await this.db.query.memberships.findFirst({
+        where: eq(schema.memberships.id, tokenRecord.membershipId),
+      });
+
+      if (!membership || membership.status !== 'active') {
+        throw new ForbiddenException({
+          error: 'MEMBERSHIP_DISABLED',
+          message: 'Membership is disabled',
+        });
+      }
+
+      const tenant = await this.db.query.tenants.findFirst({
+        where: eq(schema.tenants.id, membership.tenantId),
+      });
+
+      if (!tenant || tenant.status !== 'active') {
+        throw new ForbiddenException({
+          error: 'TENANT_DISABLED',
+          message: 'Tenant is disabled',
+        });
+      }
+
+      const { roles, perms } = await this.getMembershipRolesAndPerms(membership.id);
+
+      const accessPayload: AccessTokenPayload = {
+        sub: account.id,
+        tid: tenant.code,
+        mid: membership.id,
+        roles,
+        perms,
+        amr: ['pwd'],
+        email: account.email ?? undefined,
+        phone: account.phone ?? undefined,
+      };
+
+      newAccessToken = await this.tokenService.signAccessToken(accessPayload);
+    } else {
+      // Platform admin token
+      if (!account.isPlatformAdmin) {
+        throw new UnauthorizedException({
+          error: 'UNAUTHORIZED',
+          message: 'Account is not a platform admin',
+        });
+      }
+
+      const accessPayload: AccessTokenPayload = {
+        sub: account.id,
+        is_platform_admin: true,
+        amr: ['pwd', 'otp'],
+        roles: ['platform_admin'],
+        perms: ['*'],
+        email: account.email ?? undefined,
+        phone: account.phone ?? undefined,
+      };
+
+      newAccessToken = await this.tokenService.signAccessToken(accessPayload);
+    }
+
+    // Rotate token in transaction
+    await this.db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(schema.refreshTokens)
+        .values({
+          accountId: account.id,
+          membershipId: tokenRecord.membershipId,
+          familyId: tokenRecord.familyId,
+          tokenHash: newTokenHash,
+          expiresAt: newExpiresAt,
+        })
+        .returning({ id: schema.refreshTokens.id });
+
+      await tx
+        .update(schema.refreshTokens)
+        .set({
+          revokedAt: new Date(),
+          replacedBy: inserted.id,
+        })
+        .where(eq(schema.refreshTokens.id, tokenRecord.id));
+    });
+
+    return {
+      access_token: newAccessToken,
+      refresh_token: newRawRefreshToken,
+      token_type: 'Bearer',
+      expires_in: 900,
+    };
+  }
+
+  async logout(rawRefreshToken?: string): Promise<{ success: boolean }> {
+    if (!rawRefreshToken || typeof rawRefreshToken !== 'string') {
+      return { success: true };
+    }
+
+    const tokenHash = sha256(rawRefreshToken.trim());
+    const tokenRecord = await this.db.query.refreshTokens.findFirst({
+      where: eq(schema.refreshTokens.tokenHash, tokenHash),
+    });
+
+    if (tokenRecord) {
+      await this.db
+        .update(schema.refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.refreshTokens.familyId, tokenRecord.familyId));
+    }
+
+    return { success: true };
+  }
+
+  async getMe(payload: AccessTokenPayload): Promise<Record<string, unknown>> {
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, payload.sub),
+    });
+
+    if (!account) {
+      throw new UnauthorizedException({
+        error: 'USER_NOT_FOUND',
+        message: 'Account not found',
+      });
+    }
+
+    if (payload.is_platform_admin) {
+      return {
+        account: {
+          id: account.id,
+          email: account.email,
+          phone: account.phone,
+          isPlatformAdmin: true,
+        },
+        roles: payload.roles ?? ['platform_admin'],
+        perms: payload.perms ?? ['*'],
+      };
+    }
+
+    return {
+      account: {
+        id: account.id,
+        email: account.email,
+        phone: account.phone,
+        isPlatformAdmin: false,
+      },
+      tenant: payload.tid,
+      membershipId: payload.mid,
+      roles: payload.roles ?? [],
+      perms: payload.perms ?? [],
+    };
+  }
+
+  private async getAccountMemberships(accountId: string) {
+    const mems = await this.db
+      .select({
+        membershipId: schema.memberships.id,
+        status: schema.memberships.status,
+        tenantCode: schema.tenants.code,
+        tenantDisplayName: schema.tenants.displayName,
+        tenantStatus: schema.tenants.status,
+      })
+      .from(schema.memberships)
+      .innerJoin(schema.tenants, eq(schema.memberships.tenantId, schema.tenants.id))
+      .where(
+        and(
+          eq(schema.memberships.accountId, accountId),
+          eq(schema.memberships.status, 'active'),
+          eq(schema.tenants.status, 'active'),
+        ),
+      );
+
+    return mems;
+  }
+
+  private async getMembershipRolesAndPerms(membershipId: string) {
+    const roleRows = await this.db
+      .select({
+        roleId: schema.roles.id,
+        roleName: schema.roles.name,
+        isOwner: schema.roles.isOwner,
+      })
+      .from(schema.membershipRoles)
+      .innerJoin(schema.roles, eq(schema.membershipRoles.roleId, schema.roles.id))
+      .where(eq(schema.membershipRoles.membershipId, membershipId));
+
+    const roles = roleRows.map((r) => r.roleName);
+    const roleIds = roleRows.map((r) => r.roleId);
+
+    if (roleIds.length === 0) {
+      return { roles: [], perms: [] };
+    }
+
+    const permRows = await this.db
+      .select({
+        permissionKey: schema.rolePermissions.permissionKey,
+      })
+      .from(schema.rolePermissions)
+      .where(inArray(schema.rolePermissions.roleId, roleIds));
+
+    const perms = Array.from(new Set(permRows.map((p) => p.permissionKey)));
+    return { roles, perms };
+  }
+
+  private async issueTokensForMembership(
+    account: typeof schema.accounts.$inferSelect,
+    membershipId: string,
+    tenantCode: string,
+  ): Promise<LoginResultTokens> {
+    const { roles, perms } = await this.getMembershipRolesAndPerms(membershipId);
+
+    const accessPayload: AccessTokenPayload = {
+      sub: account.id,
+      tid: tenantCode,
+      mid: membershipId,
+      roles,
+      perms,
+      amr: ['pwd'],
+      email: account.email ?? undefined,
+      phone: account.phone ?? undefined,
+    };
+
+    const accessToken = await this.tokenService.signAccessToken(accessPayload);
+    const rawRefreshToken = generateRandomToken(32);
+    const tokenHash = sha256(rawRefreshToken);
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    await this.db.insert(schema.refreshTokens).values({
+      accountId: account.id,
+      membershipId,
+      familyId: sql`gen_random_uuid()`,
+      tokenHash,
+      expiresAt,
+    });
+
+    return {
+      access_token: accessToken,
+      refresh_token: rawRefreshToken,
+      token_type: 'Bearer',
+      expires_in: 900,
+    };
+  }
+}

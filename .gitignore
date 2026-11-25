@@ -27,3 +27,4 @@ Thumbs.db
 
 # Generated infra runtime files
 infra/odoo/odoo.runtime.conf
+infra/secrets/
