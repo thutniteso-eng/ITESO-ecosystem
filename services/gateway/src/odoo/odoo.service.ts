@@ -2,9 +2,8 @@ import {
   BadGatewayException,
   Injectable,
   NotFoundException,
-  OnModuleDestroy,
 } from '@nestjs/common';
-import { Pool } from 'pg';
+import { PlatformService } from '../features/platform.service';
 
 export interface OdooVersionResponse {
   tenant: string;
@@ -27,61 +26,21 @@ interface OdooModuleRecord {
   state?: string;
 }
 
-const TENANT_CODE_REGEX = /^[a-z0-9_]+$/;
-
 @Injectable()
-export class OdooService implements OnModuleDestroy {
-  private readonly pgPool: Pool;
+export class OdooService {
   private readonly odooUrl: string;
   private readonly devApiKey: string;
 
-  constructor() {
-    this.pgPool = new Pool({
-      host: process.env.POSTGRES_HOST ?? 'postgres',
-      port: Number(process.env.POSTGRES_PORT ?? 5432),
-      user: process.env.POSTGRES_USER ?? 'iteso_gateway',
-      password: process.env.POSTGRES_PASSWORD ?? '',
-      database: process.env.POSTGRES_DB ?? 'postgres',
-      connectionTimeoutMillis: 3000,
-    });
+  constructor(private readonly platformService: PlatformService) {
     this.odooUrl = process.env.ODOO_URL ?? 'http://odoo:8069';
     this.devApiKey = process.env.ODOO_DEV_API_KEY ?? '';
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.pgPool.end();
-  }
-
-  resolveDatabaseName(tenantCode: string | undefined): string {
-    if (!tenantCode || !TENANT_CODE_REGEX.test(tenantCode)) {
-      throw new NotFoundException({
-        error: 'TENANT_NOT_FOUND',
-        message: `Tenant '${tenantCode ?? ''}' not found`,
-      });
-    }
-    return `t_${tenantCode}`;
-  }
-
-  async tenantDatabaseExists(dbName: string): Promise<boolean> {
-    const result = await this.pgPool.query<{ exists: number }>(
-      'SELECT 1 AS exists FROM pg_database WHERE datname = $1 AND datistemplate = false',
-      [dbName],
-    );
-    return (result.rowCount ?? 0) > 0;
   }
 
   async getVersionForTenant(
     tenantCode: string | undefined,
   ): Promise<OdooVersionResponse> {
-    const dbName = this.resolveDatabaseName(tenantCode);
-    const exists = await this.tenantDatabaseExists(dbName);
-
-    if (!exists) {
-      throw new NotFoundException({
-        error: 'TENANT_NOT_FOUND',
-        message: `Tenant '${tenantCode}' not found`,
-      });
-    }
+    const tenant = await this.platformService.getActiveTenant(tenantCode);
+    const dbName = tenant.dbName;
 
     // Call Odoo 20 External JSON-2 API against the tenant's database
     const json2Response = await this.callJson2<OdooModuleRecord[]>(
@@ -107,7 +66,7 @@ export class OdooService implements OnModuleDestroy {
           : null;
 
     return {
-      tenant: tenantCode as string,
+      tenant: tenant.code,
       database: dbName,
       api: 'json-2',
       version: versionInfo.version,

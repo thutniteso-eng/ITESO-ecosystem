@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  gateway-ci:
-    name: Lint, Typecheck & Test Gateway
+  services-ci:
+    name: Lint, Typecheck & Test Services
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,26 +34,45 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test gateway
+      - name: Test services
         run: pnpm test
 
       - name: Build
         run: pnpm build
 
-  compose-odoo-ci:
-    name: Compose Stack & iteso_base Install
+  compose-integration-ci:
+    name: Compose Stack & Integration Scenarios
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Prepare .env from .env.example
         run: cp .env.example .env
 
-      - name: Start PostgreSQL and initialize gateway DB role
+      - name: Start PostgreSQL and initialize roles
         run: |
           docker compose --env-file .env -f infra/docker-compose.yml up -d --wait postgres
           ./scripts/init-db-roles.sh
+
+      - name: Run migrations & seed on platform DB
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml run --rm control-plane node dist/db/migrate.js
+          docker compose --env-file .env -f infra/docker-compose.yml run --rm control-plane node dist/db/seed.js
 
       - name: Start Compose stack
         run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
@@ -61,18 +80,62 @@ jobs:
       - name: Initialize demo tenant t_demo_fnb
         run: ./scripts/init-demo-tenant.sh
 
-      - name: Verify gateway DB role isolation
+      - name: Verify DB isolation and tenant security
         run: ./scripts/test-db-isolation.sh
 
       - name: Verify iteso_base installs on fresh test database
         run: ./scripts/test-odoo-module.sh
 
-      - name: Verify gateway endpoints & Odoo db manager disabled
+      - name: Verify gateway endpoints & feature flags scenario
         run: |
+          # 1. /health ok
           curl -fsS http://localhost:3000/health | tee /dev/stderr | grep -q '"status":"ok"'
+
+          # 2. /v1/odoo/version with demo_fnb -> 200
           curl -fsS -H "X-Tenant: demo_fnb" http://localhost:3000/v1/odoo/version | tee /dev/stderr | grep -q '"20.0'
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Tenant: khong_ton_tai" http://localhost:3000/v1/odoo/version)
-          test "$STATUS" -eq 404
+
+          # 3. /v1/features with demo_fnb -> contains system.odoo_version and system.features
+          curl -fsS -H "X-Tenant: demo_fnb" http://localhost:3000/v1/features | tee /dev/stderr | grep -q 'system.odoo_version'
+
+          # 4. Feature flag toggle scenario (Acceptance criteria 4)
+          # 4.1 PUT disable system.odoo_version -> 200
+          curl -fsS -X PUT http://localhost:3100/admin/tenants/demo_fnb/features/system.odoo_version \
+            -H "X-Admin-Token: change_me_admin_token_secret_123" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled": false, "note": "CI test disable"}' | grep -q '"enabled":false'
+
+          # 4.2 Immediate call to /v1/odoo/version -> 403 FEATURE_DISABLED
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Tenant: demo_fnb" http://localhost:3000/v1/odoo/version)
+          test "$STATUS" -eq 403
+
+          # 4.3 PUT enable system.odoo_version -> 200
+          curl -fsS -X PUT http://localhost:3100/admin/tenants/demo_fnb/features/system.odoo_version \
+            -H "X-Admin-Token: change_me_admin_token_secret_123" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled": true, "note": "CI test enable"}' | grep -q '"enabled":true'
+
+          # 4.4 Immediate call to /v1/odoo/version -> 200
+          curl -fsS -H "X-Tenant: demo_fnb" http://localhost:3000/v1/odoo/version | grep -q '"20.0'
+
+          # 4.5 Verify admin_audit_log in platform DB has exactly 2 rows for demo_fnb:system.odoo_version (Criterion 4.4)
+          AUDIT_COUNT=$(docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+            psql -U iteso_control_plane -d platform -tAc \
+            "SELECT count(*) FROM admin_audit_log WHERE target_id = 'demo_fnb:system.odoo_version';")
+          echo "Audit log count for demo_fnb:system.odoo_version: $AUDIT_COUNT"
+          test "$AUDIT_COUNT" -eq 2
+
+          # 5. Enable not_implemented feature -> 409
+          NOT_IMPL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT http://localhost:3100/admin/tenants/demo_fnb/features/fnb.pos \
+            -H "X-Admin-Token: change_me_admin_token_secret_123" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled": true}')
+          test "$NOT_IMPL_STATUS" -eq 409
+
+          # 6. Admin API without token -> 401
+          UNAUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3100/admin/tenants)
+          test "$UNAUTH_STATUS" -eq 401
+
+          # 7. Odoo db manager disabled
           curl -fsS http://localhost:8069/web/database/manager | grep -q "The database manager has been disabled by the administrator"
 
       - name: Tear down Compose stack

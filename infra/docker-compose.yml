@@ -67,6 +67,37 @@ services:
     networks:
       - iteso_internal
 
+  control-plane:
+    build:
+      context: ..
+      dockerfile: services/control-plane/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      CONTROL_PLANE_PORT: 3100
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN is required in .env}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_CONTROL_PLANE_USER: ${POSTGRES_CONTROL_PLANE_USER:-iteso_control_plane}
+      POSTGRES_CONTROL_PLANE_PASSWORD: ${POSTGRES_CONTROL_PLANE_PASSWORD:?POSTGRES_CONTROL_PLANE_PASSWORD is required in .env}
+      PLATFORM_DB: ${PLATFORM_DB:-platform}
+      NATS_URL: nats://nats:4222
+    ports:
+      - "127.0.0.1:${CONTROL_PLANE_PORT:-3100}:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - iteso_internal
+
   gateway:
     build:
       context: ..
@@ -74,6 +105,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      control-plane:
         condition: service_healthy
       odoo:
         condition: service_healthy
@@ -88,7 +121,8 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${POSTGRES_GATEWAY_USER:-iteso_gateway}
       POSTGRES_PASSWORD: ${POSTGRES_GATEWAY_PASSWORD:?POSTGRES_GATEWAY_PASSWORD is required in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${PLATFORM_DB:-platform}
+      PLATFORM_DB: ${PLATFORM_DB:-platform}
       ODOO_URL: http://odoo:8069
       ODOO_DEV_API_KEY: ${ODOO_DEV_API_KEY:-}
       NATS_URL: nats://nats:4222

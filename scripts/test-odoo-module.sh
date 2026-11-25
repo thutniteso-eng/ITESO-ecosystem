@@ -43,6 +43,9 @@ compose exec -T odoo odoo \
   --stop-after-init \
   --no-http
 
+# Secure test tenant DB using shared helper script
+"$ROOT_DIR/scripts/lib/secure-tenant-db.sh" "$TEST_DB"
+
 STATE="$(compose exec -T postgres psql -U "$PG_USER" -d "$TEST_DB" -tAc "SELECT state FROM ir_module_module WHERE name = 'iteso_base'" | tr -d '[:space:]')"
 if [ "$STATE" != "installed" ]; then
   echo "ERROR: expected iteso_base state='installed', got '${STATE}'" >&2

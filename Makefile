@@ -10,6 +10,8 @@ up:
 	fi
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
+	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
+	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
@@ -24,6 +26,8 @@ reset:
 	$(COMPOSE) down -v --remove-orphans
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
+	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
+	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
@@ -31,6 +35,7 @@ seed:
 	@echo "Dữ liệu nhà hàng mẫu sẽ có ở task sau."
 
 test:
+	pnpm --filter @iteso/control-plane test
 	pnpm --filter @iteso/gateway test
 	./scripts/test-db-isolation.sh
 	./scripts/test-odoo-module.sh

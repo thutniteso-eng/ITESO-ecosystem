@@ -18,7 +18,6 @@ set +a
 TENANT_DB="${DEMO_TENANT_DB:-t_demo_fnb}"
 PG_USER="${POSTGRES_USER:-odoo}"
 PG_DB="${POSTGRES_DB:-postgres}"
-GW_USER="${POSTGRES_GATEWAY_USER:-iteso_gateway}"
 DEMO_ADMIN_PASS="${ODOO_DEMO_ADMIN_PASSWORD:?ODOO_DEMO_ADMIN_PASSWORD is required in .env}"
 
 compose() {
@@ -41,19 +40,8 @@ else
   echo "[init-demo-tenant] Database '$TENANT_DB' already exists."
 fi
 
-echo "[init-demo-tenant] Revoking tenant DB access from PUBLIC and '${GW_USER}'..."
-compose exec -T postgres psql -v ON_ERROR_STOP=1 \
-  -U "$PG_USER" \
-  -d "$PG_DB" \
-  -v tenant_db="$TENANT_DB" \
-  -v gw_user="$GW_USER" <<'SQL'
-SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'tenant_db')
-\gexec
-
-SELECT format('REVOKE ALL ON DATABASE %I FROM %I', :'tenant_db', :'gw_user')
-WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'gw_user')
-\gexec
-SQL
+# Secure tenant DB using shared helper script
+"$ROOT_DIR/scripts/lib/secure-tenant-db.sh" "$TENANT_DB"
 
 echo "[init-demo-tenant] Updating admin password and dev JSON-2 API key on '$TENANT_DB'..."
 compose exec -T \
