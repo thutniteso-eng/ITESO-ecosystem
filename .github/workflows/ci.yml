@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  gateway-ci:
+    name: Lint, Typecheck & Test Gateway
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test gateway
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  compose-odoo-ci:
+    name: Compose Stack & iteso_base Install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare .env from .env.example
+        run: cp .env.example .env
+
+      - name: Start Compose stack
+        run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
+
+      - name: Initialize demo tenant t_demo_fnb
+        run: ./scripts/init-demo-tenant.sh
+
+      - name: Verify iteso_base installs on fresh test database
+        run: ./scripts/test-odoo-module.sh
+
+      - name: Verify gateway endpoints & Odoo db manager disabled
+        run: |
+          curl -fsS http://localhost:3000/health | tee /dev/stderr | grep -q '"status":"ok"'
+          curl -fsS -H "X-Tenant: demo_fnb" http://localhost:3000/v1/odoo/version | tee /dev/stderr | grep -q '"20.0'
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Tenant: khong_ton_tai" http://localhost:3000/v1/odoo/version)
+          test "$STATUS" -eq 404
+          curl -fsS http://localhost:8069/web/database/manager | grep -q "The database manager has been disabled by the administrator"
+
+      - name: Tear down Compose stack
+        if: always()
+        run: docker compose --env-file .env -f infra/docker-compose.yml down -v

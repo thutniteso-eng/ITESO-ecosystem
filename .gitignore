@@ -1,0 +1,29 @@
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Node / pnpm / Turborepo
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Python / Odoo
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Generated infra runtime files
+infra/odoo/odoo.runtime.conf
