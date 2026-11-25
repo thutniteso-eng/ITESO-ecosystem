@@ -32,7 +32,7 @@ export class HealthService implements OnModuleDestroy {
       port: Number(process.env.POSTGRES_PORT ?? 5432),
       user: process.env.POSTGRES_USER ?? 'iteso_gateway',
       password: process.env.POSTGRES_PASSWORD ?? '',
-      database: process.env.POSTGRES_DB ?? 'postgres',
+      database: process.env.PLATFORM_DB ?? 'platform',
       connectionTimeoutMillis: 3000,
     });
     this.odooUrl = process.env.ODOO_URL ?? 'http://odoo:8069';
@@ -70,7 +70,8 @@ export class HealthService implements OnModuleDestroy {
 
   async checkPostgres(): Promise<ComponentStatus> {
     try {
-      await this.pgPool.query('SELECT 1');
+      const res = await this.pgPool.query('SELECT 1');
+      if (res) return { status: 'ok' };
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', reason: this.formatError(err) };
