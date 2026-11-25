@@ -44,4 +44,16 @@ docs/tasks/      Phiếu việc (TASK-xxx) và báo cáo
 
 ## Chạy môi trường dev
 
-Xem `docs/tasks/TASK-001-khoi-tao-repo-va-moi-truong-dev.md`. Sau khi TASK-001 hoàn thành, phần này sẽ ghi lệnh chạy cụ thể.
+Yêu cầu: WSL2 (Linux), Docker Desktop / Docker Engine, Node.js LTS, `pnpm`, `make`.
+
+```bash
+cp .env.example .env   # đổi các giá trị mật khẩu mặc định trong .env nếu cần
+make up                # dựng 5 container, tạo role gateway và tenant mẫu t_demo_fnb
+make test              # chạy test gateway, kiểm tra tách quyền DB và cài iteso_base
+make reset             # xóa sạch dữ liệu dev (volumes) và dựng lại từ đầu
+make down              # dừng toàn bộ container
+```
+
+Sau khi `make up` xong:
+- API Gateway healthcheck: `http://localhost:3000/health`
+- Odoo 20.0 Community: `http://localhost:8069`

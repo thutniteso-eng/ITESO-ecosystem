@@ -8,6 +8,8 @@ up:
 		echo "ERROR: .env not found. Run: cp .env.example .env"; \
 		exit 1; \
 	fi
+	$(COMPOSE) up -d --wait postgres
+	./scripts/init-db-roles.sh
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
@@ -20,6 +22,8 @@ reset:
 		exit 1; \
 	fi
 	$(COMPOSE) down -v --remove-orphans
+	$(COMPOSE) up -d --wait postgres
+	./scripts/init-db-roles.sh
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
@@ -28,6 +32,7 @@ seed:
 
 test:
 	pnpm --filter @iteso/gateway test
+	./scripts/test-db-isolation.sh
 	./scripts/test-odoo-module.sh
 
 ps:

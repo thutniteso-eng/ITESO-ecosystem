@@ -39,7 +39,7 @@ export class OdooService implements OnModuleDestroy {
     this.pgPool = new Pool({
       host: process.env.POSTGRES_HOST ?? 'postgres',
       port: Number(process.env.POSTGRES_PORT ?? 5432),
-      user: process.env.POSTGRES_USER ?? 'odoo',
+      user: process.env.POSTGRES_USER ?? 'iteso_gateway',
       password: process.env.POSTGRES_PASSWORD ?? '',
       database: process.env.POSTGRES_DB ?? 'postgres',
       connectionTimeoutMillis: 3000,

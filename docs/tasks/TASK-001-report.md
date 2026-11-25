@@ -150,3 +150,102 @@ Time:        2.386 s, estimated 3 s
   Cần Product Owner kiểm tra lại mục **Billing & plans** của tài khoản `thutniteso-eng` trên GitHub (hoặc bật/cấu hình self-hosted runner nếu dùng repo private), sau đó bấm **Re-run all jobs** trên PR #1. Toàn bộ các bước trong CI (`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `make up`, `make test`, kiểm tra endpoint và tắt database manager) đã chạy xanh cục bộ trên WSL2.
 - Khi bật `proxy_mode = True` trên Odoo 20, mặc định Odoo chỉ lắng nghe `127.0.0.1:8069` nên đã khai báo tường minh `http_interface = 0.0.0.0` trong `infra/odoo/odoo.conf` để `gateway` và host kết nối được.
 - `README.md` ở nhánh `main` giữ nguyên văn theo yêu cầu; sau khi PR TASK-001 được merge, có thể cập nhật mục "Chạy môi trường dev" trong `README.md` ở task tiếp theo nếu Claude/PO muốn.
+
+---
+
+## Vòng 2 (theo kiểm duyệt của Claude trên PR #1)
+
+### Đã sửa đủ 5 điểm
+
+1. **Chỉ mở cổng trên `127.0.0.1` (`infra/docker-compose.yml`):**
+   - Đổi `odoo` sang `"127.0.0.1:${ODOO_PORT:-8069}:8069"` và `gateway` sang `"127.0.0.1:${GATEWAY_PORT:-3000}:3000"`.
+2. **Đổi mật khẩu mặc định của user `admin` trong `t_demo_fnb`:**
+   - Thêm `ODOO_DEMO_ADMIN_PASSWORD` vào `.env.example`.
+   - `scripts/init-demo-tenant.sh` đặt `admin_user.password = os.environ["ODOO_DEMO_ADMIN_PASSWORD"]` qua ORM trong `odoo shell` (idempotent, đã chạy lại 2 lần liên tiếp không lỗi).
+3. **Tách role PostgreSQL ít quyền `iteso_gateway` cho gateway:**
+   - Thêm `POSTGRES_GATEWAY_USER` và `POSTGRES_GATEWAY_PASSWORD` vào `.env.example`.
+   - Tạo script idempotent `scripts/init-db-roles.sh` (tạo/cập nhật role `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`, chỉ cấp `CONNECT` trên database `postgres`, thu hồi quyền `schema public`), gọi trong `make up`, `make reset` và CI trước khi dựng `gateway` và tạo tenant.
+   - `scripts/init-demo-tenant.sh` thu hồi `CONNECT` từ `PUBLIC` và `iteso_gateway` trên `t_demo_fnb`.
+   - `infra/docker-compose.yml` và `services/gateway` sử dụng `POSTGRES_GATEWAY_USER` / `POSTGRES_GATEWAY_PASSWORD` cho cả `/health` và kiểm tra tenant.
+   - Thêm `scripts/test-db-isolation.sh` (chạy trong `make test` và CI) xác nhận `iteso_gateway` bị từ chối truy cập `t_demo_fnb` (`SELECT id, login FROM res_users LIMIT 1`).
+4. **Thêm `.gitattributes`:** `* text=auto eol=lf`.
+5. **Cập nhật `README.md` mục "Chạy môi trường dev":** ghi rõ `cp .env.example .env`, `make up`, `make test`, `make reset`, `make down`, kèm `http://localhost:3000/health` và `http://localhost:8069`.
+
+### Output thật (Vòng 2)
+
+- `make reset` (dọn sạch volume, dựng lại toàn bộ, tạo role `iteso_gateway`, khởi tạo `t_demo_fnb` + đổi mật khẩu `admin` + nạp API key):
+```text
+[+] down 7/8
+ ✔ Container iteso-ecosystem-gateway-1    Removed
+ ✔ Container iteso-ecosystem-nats-1       Removed
+ ✔ Container iteso-ecosystem-odoo-1       Removed
+ ✔ Container iteso-ecosystem-redis-1      Removed
+ ✔ Container iteso-ecosystem-postgres-1   Removed
+ ✔ Volume iteso-ecosystem_postgres_data   Removed
+ ✔ Volume iteso-ecosystem_odoo_data       Removed
+...
+[init-db-roles] Ensuring least-privilege role 'iteso_gateway' exists...
+[init-db-roles] Role 'iteso_gateway' is configured (LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE, CONNECT on 'postgres' only).
+...
+[init-demo-tenant] Database 't_demo_fnb' initialized with 'iteso_base'.
+[init-demo-tenant] Revoking tenant DB access from PUBLIC and 'iteso_gateway'...
+[init-demo-tenant] Updating admin password and dev JSON-2 API key on 't_demo_fnb'...
+Admin password updated and dev API key ready for user: admin
+[init-demo-tenant] Done.
+```
+(Đã chạy lại `./scripts/init-db-roles.sh && ./scripts/init-demo-tenant.sh` lần thứ 2 liên tiếp: exit code `0`, không lỗi).
+
+- `make ps` (xác nhận chỉ mở cổng trên `127.0.0.1`):
+```text
+NAME                         IMAGE                     COMMAND                  SERVICE    CREATED              STATUS                        PORTS
+iteso-ecosystem-gateway-1    iteso-ecosystem-gateway   "docker-entrypoint.s…"   gateway    58 seconds ago       Up 51 seconds (healthy)       127.0.0.1:3000->3000/tcp
+iteso-ecosystem-nats-1       nats:2.15.3               "/nats-server -m 8222"   nats       57 seconds ago       Up 57 seconds                 4222/tcp, 6222/tcp, 8222/tcp
+iteso-ecosystem-odoo-1       odoo:20.0-20261123        "/bin/sh /etc/odoo/s…"   odoo       57 seconds ago       Up 57 seconds (healthy)       127.0.0.1:8069->8069/tcp, 8071-8072/tcp
+iteso-ecosystem-postgres-1   postgres:16.16-alpine     "docker-entrypoint.s…"   postgres   About a minute ago   Up About a minute (healthy)   5432/tcp
+iteso-ecosystem-redis-1      redis:7.4.12-alpine       "docker-entrypoint.s…"   redis      57 seconds ago       Up 57 seconds (healthy)       6379/tcp
+```
+
+- `make test` (gateway tests + kiểm tra tách quyền DB + cài mới `iteso_base`):
+```text
+PASS test/app.spec.ts
+  Test Suites: 1 passed, 1 total
+  Tests:       5 passed, 5 total
+
+[test-db-isolation] Verifying 'iteso_gateway' can connect to 'postgres' and query pg_database...
+[test-db-isolation] Verifying 'iteso_gateway' is DENIED access to 't_demo_fnb' (res_users)...
+[test-db-isolation] PASS: 'iteso_gateway' was rejected from 't_demo_fnb': psql: error: connection to server on socket "/run/postgresql/.s.PGSQL.5432" failed: FATAL:  permission denied for database "t_demo_fnb"
+DETAIL:  User does not have CONNECT privilege.
+
+[test-odoo-module] PASS: iteso_base installed cleanly in 't_test_iteso_base' (state=installed).
+```
+
+- `curl` endpoints:
+```text
+# GET http://localhost:3000/health
+HTTP/1.1 200 OK
+{"status":"ok","components":{"gateway":{"status":"ok"},"postgres":{"status":"ok"},"odoo":{"status":"ok"},"nats":{"status":"ok"},"redis":{"status":"ok"}}}
+
+# GET http://localhost:3000/v1/odoo/version -H "X-Tenant: demo_fnb"
+HTTP/1.1 200 OK
+{"tenant":"demo_fnb","database":"t_demo_fnb","api":"json-2","version":"20.0-20261123","version_info":[20,0,0,"final",0,""],"base_module_version":"20.0.1.3"}
+
+# GET http://localhost:3000/v1/odoo/version -H "X-Tenant: khong_ton_tai"
+HTTP/1.1 404 Not Found
+{"error":"TENANT_NOT_FOUND","message":"Tenant 'khong_ton_tai' not found"}
+```
+
+- Kiểm tra điểm 2 (đăng nhập `admin/admin` vào `t_demo_fnb` bị từ chối):
+```text
+$ curl -s -X POST http://localhost:8069/web/session/authenticate \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","params":{"db":"t_demo_fnb","login":"admin","password":"admin"}}'
+{"jsonrpc": "2.0", "id": null, "error": {"code": 0, "message": "Odoo Server Error", "data": {"name": "odoo.exceptions.AccessDenied", "message": "Access Denied", "arguments": ["Access Denied"], "timestamp": 1795616260, "context": {}, "debug": "odoo.exceptions.AccessDenied: Access Denied\n"}}}
+```
+
+- Kiểm tra điểm 3 (thuộc tính role `iteso_gateway` trong PostgreSQL):
+```text
+         List of roles
+   Role name   |   Attributes
+---------------+----------------
+ iteso_gateway | No inheritance
+```

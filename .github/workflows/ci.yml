@@ -50,11 +50,19 @@ jobs:
       - name: Prepare .env from .env.example
         run: cp .env.example .env
 
+      - name: Start PostgreSQL and initialize gateway DB role
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --wait postgres
+          ./scripts/init-db-roles.sh
+
       - name: Start Compose stack
         run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
 
       - name: Initialize demo tenant t_demo_fnb
         run: ./scripts/init-demo-tenant.sh
+
+      - name: Verify gateway DB role isolation
+        run: ./scripts/test-db-isolation.sh
 
       - name: Verify iteso_base installs on fresh test database
         run: ./scripts/test-odoo-module.sh

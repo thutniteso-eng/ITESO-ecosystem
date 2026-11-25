@@ -18,6 +18,8 @@ set +a
 TENANT_DB="${DEMO_TENANT_DB:-t_demo_fnb}"
 PG_USER="${POSTGRES_USER:-odoo}"
 PG_DB="${POSTGRES_DB:-postgres}"
+GW_USER="${POSTGRES_GATEWAY_USER:-iteso_gateway}"
+DEMO_ADMIN_PASS="${ODOO_DEMO_ADMIN_PASSWORD:?ODOO_DEMO_ADMIN_PASSWORD is required in .env}"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -39,39 +41,57 @@ else
   echo "[init-demo-tenant] Database '$TENANT_DB' already exists."
 fi
 
-if [ -n "${ODOO_DEV_API_KEY:-}" ]; then
-  echo "[init-demo-tenant] Ensuring dev JSON-2 API key is configured on '$TENANT_DB'..."
-  compose exec -T -e ODOO_DEV_API_KEY="$ODOO_DEV_API_KEY" odoo odoo shell \
-    -c /tmp/odoo.conf \
-    -d "$TENANT_DB" \
-    --no-http <<'PYEOF'
+echo "[init-demo-tenant] Revoking tenant DB access from PUBLIC and '${GW_USER}'..."
+compose exec -T postgres psql -v ON_ERROR_STOP=1 \
+  -U "$PG_USER" \
+  -d "$PG_DB" \
+  -v tenant_db="$TENANT_DB" \
+  -v gw_user="$GW_USER" <<'SQL'
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'tenant_db')
+\gexec
+
+SELECT format('REVOKE ALL ON DATABASE %I FROM %I', :'tenant_db', :'gw_user')
+WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'gw_user')
+\gexec
+SQL
+
+echo "[init-demo-tenant] Updating admin password and dev JSON-2 API key on '$TENANT_DB'..."
+compose exec -T \
+  -e ODOO_DEMO_ADMIN_PASSWORD="$DEMO_ADMIN_PASS" \
+  -e ODOO_DEV_API_KEY="${ODOO_DEV_API_KEY:-}" \
+  odoo odoo shell \
+  -c /tmp/odoo.conf \
+  -d "$TENANT_DB" \
+  --no-http <<'PYEOF'
 import os
 from odoo.addons.base.models.res_users import KEY_CRYPT_CONTEXT, INDEX_SIZE
 
-raw_key = os.environ["ODOO_DEV_API_KEY"]
-key_name = "iteso-gateway-dev"
-admin_user = env.ref("base.user_admin")
+admin_user = env.ref("base.user_admin").sudo()
+admin_user.password = os.environ["ODOO_DEMO_ADMIN_PASSWORD"]
 
-env.cr.execute(
-    "DELETE FROM res_users_apikeys WHERE user_id = %s AND name = %s",
-    (admin_user.id, key_name),
-)
-env.cr.execute(
-    """
-    INSERT INTO res_users_apikeys (name, user_id, scope, expiration_date, key, index)
-    VALUES (%s, %s, %s, NULL, %s, %s)
-    """,
-    (
-        key_name,
-        admin_user.id,
-        "rpc",
-        KEY_CRYPT_CONTEXT.hash(raw_key),
-        raw_key[:INDEX_SIZE],
-    ),
-)
+raw_key = os.environ.get("ODOO_DEV_API_KEY", "")
+if raw_key:
+    key_name = "iteso-gateway-dev"
+    env.cr.execute(
+        "DELETE FROM res_users_apikeys WHERE user_id = %s AND name = %s",
+        (admin_user.id, key_name),
+    )
+    env.cr.execute(
+        """
+        INSERT INTO res_users_apikeys (name, user_id, scope, expiration_date, key, index)
+        VALUES (%s, %s, %s, NULL, %s, %s)
+        """,
+        (
+            key_name,
+            admin_user.id,
+            "rpc",
+            KEY_CRYPT_CONTEXT.hash(raw_key),
+            raw_key[:INDEX_SIZE],
+        ),
+    )
+
 env.cr.commit()
-print("Dev API key ready for user:", admin_user.login)
+print("Admin password updated and dev API key ready for user:", admin_user.login)
 PYEOF
-fi
 
 echo "[init-demo-tenant] Done."
