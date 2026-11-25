@@ -64,5 +64,5 @@ NestJS + Passport, `argon2` để băm, `jose` để ký và kiểm JWT.
 
 ## Áp dụng
 
-- Phần đăng nhập, tài khoản, membership, vai trò mẫu làm trong task ngay sau TASK-001, trước mọi tính năng nghiệp vụ.
+- Phần đăng nhập, tài khoản, membership, vai trò mẫu làm trong TASK-003 (sau khi TASK-002 dựng control plane), trước mọi tính năng nghiệp vụ.
 - Quên mật khẩu (qua email hoặc Zalo OTP) là tính năng riêng, có cờ `auth.password_reset`. Trong giai đoạn dev, Super Admin đặt lại mật khẩu từ trang quản trị.
