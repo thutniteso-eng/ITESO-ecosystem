@@ -1,10 +1,6 @@
-import * as dotenv from 'dotenv';
-import * as path from 'path';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
-
-dotenv.config({ path: path.join(__dirname, '../../../../.env') });
 
 export async function seedDatabase(pgPool: Pool): Promise<void> {
   const db = drizzle(pgPool, { schema });
@@ -63,7 +59,7 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
       });
   }
 
-  // Grant read permissions to iteso_gateway again to ensure it covers all rows and newly seeded tables
+  // Ensure iteso_gateway permissions are active
   await pgPool.query(`
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iteso_gateway') THEN
@@ -77,20 +73,22 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
 
 if (require.main === module) {
   const pool = new Pool({
-    host: process.env.POSTGRES_HOST ?? 'localhost',
+    host: process.env.POSTGRES_HOST ?? 'postgres',
     port: Number(process.env.POSTGRES_PORT ?? 5432),
     user: process.env.POSTGRES_CONTROL_PLANE_USER ?? 'iteso_control_plane',
     password: process.env.POSTGRES_CONTROL_PLANE_PASSWORD ?? '',
     database: process.env.PLATFORM_DB ?? 'platform',
   });
 
-  seedDatabase(pool)
-    .then(() => {
+  (async () => {
+    try {
+      console.log('Seeding database...');
+      await seedDatabase(pool);
       console.log('Seeding completed successfully.');
-      return pool.end();
-    })
-    .catch((err) => {
+      await pool.end();
+    } catch (err) {
       console.error('Seeding failed:', err);
       process.exit(1);
-    });
+    }
+  })();
 }

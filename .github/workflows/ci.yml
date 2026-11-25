@@ -71,8 +71,8 @@ jobs:
 
       - name: Run migrations & seed on platform DB
         run: |
-          pnpm --filter @iteso/control-plane db:migrate
-          pnpm --filter @iteso/control-plane db:seed
+          docker compose --env-file .env -f infra/docker-compose.yml run --rm control-plane node dist/db/migrate.js
+          docker compose --env-file .env -f infra/docker-compose.yml run --rm control-plane node dist/db/seed.js
 
       - name: Start Compose stack
         run: docker compose --env-file .env -f infra/docker-compose.yml up -d --build --wait
@@ -116,6 +116,13 @@ jobs:
 
           # 4.4 Immediate call to /v1/odoo/version -> 200
           curl -fsS -H "X-Tenant: demo_fnb" http://localhost:3000/v1/odoo/version | grep -q '"20.0'
+
+          # 4.5 Verify admin_audit_log in platform DB has exactly 2 rows for demo_fnb:system.odoo_version (Criterion 4.4)
+          AUDIT_COUNT=$(docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+            psql -U iteso_control_plane -d platform -tAc \
+            "SELECT count(*) FROM admin_audit_log WHERE target_id = 'demo_fnb:system.odoo_version';")
+          echo "Audit log count for demo_fnb:system.odoo_version: $AUDIT_COUNT"
+          test "$AUDIT_COUNT" -eq 2
 
           # 5. Enable not_implemented feature -> 409
           NOT_IMPL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT http://localhost:3100/admin/tenants/demo_fnb/features/fnb.pos \

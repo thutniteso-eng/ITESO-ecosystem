@@ -4,7 +4,6 @@ import { FeatureFlagGuard } from './features/feature-flag.guard';
 import { FeaturesController } from './features/features.controller';
 import { GatewayNatsListener } from './features/gateway-nats.listener';
 import { PlatformService } from './features/platform.service';
-import { TestUndeclaredController } from './features/test-undeclared.controller';
 import { HealthController } from './health/health.controller';
 import { HealthService } from './health/health.service';
 import { OdooController } from './odoo/odoo.controller';
@@ -15,7 +14,6 @@ import { OdooService } from './odoo/odoo.service';
     HealthController,
     OdooController,
     FeaturesController,
-    TestUndeclaredController,
   ],
   providers: [
     HealthService,

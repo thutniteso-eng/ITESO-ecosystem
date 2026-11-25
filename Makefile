@@ -10,8 +10,8 @@ up:
 	fi
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
-	pnpm --filter @iteso/control-plane db:migrate
-	pnpm --filter @iteso/control-plane db:seed
+	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
+	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
@@ -26,8 +26,8 @@ reset:
 	$(COMPOSE) down -v --remove-orphans
 	$(COMPOSE) up -d --wait postgres
 	./scripts/init-db-roles.sh
-	pnpm --filter @iteso/control-plane db:migrate
-	pnpm --filter @iteso/control-plane db:seed
+	$(COMPOSE) run --rm control-plane node dist/db/migrate.js
+	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
 
