@@ -64,5 +64,14 @@ NestJS + Passport, `argon2` để băm, `jose` để ký và kiểm JWT.
 
 ## Áp dụng
 
-- Phần đăng nhập, tài khoản, membership, vai trò mẫu làm trong TASK-003 (sau khi TASK-002 dựng control plane), trước mọi tính năng nghiệp vụ.
+- Chia thành ba task, làm trước mọi tính năng nghiệp vụ:
+  - TASK-003: tài khoản, membership, vai trò và quyền, đăng nhập, Super Admin có xác thực hai lớp (thay admin token tạm của ADR-006).
+  - TASK-004: mỗi membership có người dùng Odoo riêng; gateway gọi Odoo bằng API key của người đó (thay `ODOO_DEV_API_KEY`).
+  - TASK-005: ghép máy POS, đăng nhập bằng PIN, đăng nhập khi mất mạng.
+- Mã QR cho khách và "phiên hỗ trợ" của Super Admin làm cùng các tính năng dùng đến chúng.
 - Quên mật khẩu (qua email hoặc Zalo OTP) là tính năng riêng, có cờ `auth.password_reset`. Trong giai đoạn dev, Super Admin đặt lại mật khẩu từ trang quản trị.
+
+## Bổ sung khi triển khai (26/11/2026)
+
+- Control plane là nơi duy nhất **ký** token, vì chỉ nó được ghi dữ liệu tài khoản và refresh token (ADR-006). Gateway **xác minh** access token bằng khóa công khai, không cần truy vấn database ở mỗi request.
+- Ứng dụng vẫn chỉ gọi gateway: gateway chuyển tiếp `/v1/auth/*` sang control plane trong mạng nội bộ.
