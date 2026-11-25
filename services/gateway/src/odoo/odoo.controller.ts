@@ -17,7 +17,7 @@ export class OdooController {
   @RequireFeature('system.odoo_version')
   @RequirePermission('system.diagnostics.view')
   async getVersion(@Req() req: RequestWithTenant): Promise<OdooVersionResponse> {
-    const tenantCode = req.tenantCode || req.user?.tid || (req.headers['x-tenant'] as string);
-    return this.odooService.getVersionForTenant(tenantCode);
+    const tenantCode = req.tenantCode || req.user?.tid;
+    return this.odooService.getVersionForTenant(tenantCode!);
   }
 }

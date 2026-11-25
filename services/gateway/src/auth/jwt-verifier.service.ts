@@ -13,6 +13,7 @@ export interface TokenPayload {
   is_platform_admin?: boolean;
   email?: string;
   phone?: string;
+  typ?: string;
 }
 
 @Injectable()
@@ -31,6 +32,10 @@ export class JwtVerifierService implements OnModuleInit {
     if (fs.existsSync(pubPath)) {
       const pubPem = fs.readFileSync(pubPath, 'utf8');
       this.publicKeyObj = await jose.importSPKI(pubPem, 'EdDSA');
+    } else if (process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        `FATAL: Ed25519 public key file not found at ${pubPath}.`,
+      );
     }
   }
 
@@ -44,12 +49,22 @@ export class JwtVerifierService implements OnModuleInit {
       await this.loadPublicKey();
     }
 
+    if (!this.publicKeyObj) {
+      throw new Error('Public key not loaded');
+    }
+
     const verified = await jose.jwtVerify(token, this.publicKeyObj, {
       algorithms: ['EdDSA'],
+      audience: 'iteso-api',
+      issuer: 'iteso-control-plane',
     });
 
-    if (verified.protectedHeader.kid && verified.protectedHeader.kid !== this.expectedKid) {
+    if (!verified.protectedHeader.kid || verified.protectedHeader.kid !== this.expectedKid) {
       throw new Error(`Invalid token kid: ${verified.protectedHeader.kid}`);
+    }
+
+    if (verified.payload.typ !== 'access') {
+      throw new Error(`Invalid token typ: ${verified.payload.typ}, expected 'access'`);
     }
 
     return verified.payload as unknown as TokenPayload;

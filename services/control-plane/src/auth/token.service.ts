@@ -14,6 +14,9 @@ export interface AccessTokenPayload {
   is_platform_admin?: boolean;
   email?: string;
   phone?: string;
+  typ?: string;
+  iss?: string;
+  aud?: string;
 }
 
 export interface ShortLivedTokenPayload {
@@ -45,29 +48,48 @@ export class TokenService implements OnModuleInit {
     if (fs.existsSync(privPath)) {
       const privPem = fs.readFileSync(privPath, 'utf8');
       this.privateKeyObj = await jose.importPKCS8(privPem, 'EdDSA');
-      // Derive public key from private key
+      // Derive public key from private key if public key file is missing
       const pubKey = crypto.createPublicKey(privPem);
       const pubPem = pubKey.export({ type: 'spki', format: 'pem' });
       this.publicKeyObj = await jose.importSPKI(pubPem.toString(), 'EdDSA');
-    } else {
-      // In tests or if files not mounted, generate an ephemeral pair
+    } else if (process.env.NODE_ENV === 'test') {
+      // In tests only, generate an ephemeral pair if files not found
       const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
       const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
       const pubPem = publicKey.export({ type: 'spki', format: 'pem' });
       this.privateKeyObj = await jose.importPKCS8(privPem.toString(), 'EdDSA');
       this.publicKeyObj = await jose.importSPKI(pubPem.toString(), 'EdDSA');
       return;
+    } else {
+      throw new Error(
+        `FATAL: Ed25519 private key file not found at ${privPath}. Ephemeral keys are strictly forbidden in non-test environments.`,
+      );
     }
 
     if (fs.existsSync(pubPath)) {
       const pubPem = fs.readFileSync(pubPath, 'utf8');
       this.publicKeyObj = await jose.importSPKI(pubPem, 'EdDSA');
+    } else if (!this.publicKeyObj && process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        `FATAL: Ed25519 public key file not found at ${pubPath}.`,
+      );
     }
   }
 
+  // Method to allow tests to inject keys if needed
+  setKeys(privateKey: jose.KeyLike | Uint8Array, publicKey: jose.KeyLike | Uint8Array): void {
+    this.privateKeyObj = privateKey;
+    this.publicKeyObj = publicKey;
+  }
+
   async signAccessToken(payload: AccessTokenPayload): Promise<string> {
-    return new jose.SignJWT({ ...payload })
+    return new jose.SignJWT({
+      ...payload,
+      typ: 'access',
+    })
       .setProtectedHeader({ alg: 'EdDSA', kid: this.kid })
+      .setIssuer('iteso-control-plane')
+      .setAudience('iteso-api')
       .setIssuedAt()
       .setExpirationTime('15m')
       .sign(this.privateKeyObj);
@@ -76,7 +98,18 @@ export class TokenService implements OnModuleInit {
   async verifyAccessToken(token: string): Promise<AccessTokenPayload> {
     const verified = await jose.jwtVerify(token, this.publicKeyObj, {
       algorithms: ['EdDSA'],
+      audience: 'iteso-api',
+      issuer: 'iteso-control-plane',
     });
+
+    if (!verified.protectedHeader.kid || verified.protectedHeader.kid !== this.kid) {
+      throw new Error(`Invalid token kid: ${verified.protectedHeader.kid}`);
+    }
+
+    if (verified.payload.typ !== 'access') {
+      throw new Error(`Invalid token typ: ${verified.payload.typ}, expected 'access'`);
+    }
+
     return verified.payload as unknown as AccessTokenPayload;
   }
 
@@ -84,6 +117,7 @@ export class TokenService implements OnModuleInit {
     const jti = crypto.randomUUID();
     return new jose.SignJWT({ ...payload })
       .setProtectedHeader({ alg: 'EdDSA', kid: this.kid })
+      .setIssuer('iteso-control-plane')
       .setJti(jti)
       .setIssuedAt()
       .setExpirationTime('5m')
@@ -96,6 +130,7 @@ export class TokenService implements OnModuleInit {
   ): Promise<ShortLivedTokenPayload> {
     const verified = await jose.jwtVerify(token, this.publicKeyObj, {
       algorithms: ['EdDSA'],
+      issuer: 'iteso-control-plane',
     });
 
     const jti = verified.payload.jti;

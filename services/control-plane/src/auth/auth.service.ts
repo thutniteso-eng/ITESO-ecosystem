@@ -2,15 +2,19 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, and, or, inArray, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as schema from '../db/schema';
 import {
   decryptAesGcm,
   generateRandomToken,
+  hashPassword,
   sha256,
   verifyPassword,
   verifyTotp,
@@ -38,10 +42,11 @@ export interface LoginResultTotp {
 export type LoginResult = LoginResultTokens | LoginResultSelectTenant | LoginResultTotp;
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   private readonly db: NodePgDatabase<typeof schema>;
   private readonly pgPool: Pool;
   private readonly encryptionKey: string;
+  private dummyHash!: string;
 
   constructor(private readonly tokenService: TokenService) {
     this.pgPool = new Pool({
@@ -53,7 +58,53 @@ export class AuthService {
       connectionTimeoutMillis: 3000,
     });
     this.db = drizzle(this.pgPool, { schema });
-    this.encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY || 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
+
+    // Load and validate encryption key
+    let key = process.env.PLATFORM_ENCRYPTION_KEY;
+    const keyPath =
+      process.env.PLATFORM_ENCRYPTION_KEY_PATH ||
+      path.resolve(__dirname, '../../../../infra/secrets/platform_encryption.key');
+
+    if (fs.existsSync(keyPath)) {
+      key = fs.readFileSync(keyPath, 'utf8').trim();
+    }
+
+    if (key) {
+      try {
+        const decoded = Buffer.from(key, 'base64');
+        if (decoded.length === 32) {
+          this.encryptionKey = key;
+        } else {
+          throw new Error(`Decoded length is ${decoded.length}, expected 32 bytes.`);
+        }
+      } catch (err: unknown) {
+        if (process.env.NODE_ENV === 'test') {
+          this.encryptionKey = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `FATAL: Invalid platform encryption key: ${msg}. Key must be 32 bytes base64 encoded.`,
+          );
+        }
+      }
+    } else {
+      if (process.env.NODE_ENV === 'test') {
+        this.encryptionKey = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
+      } else {
+        throw new Error(
+          `FATAL: Platform encryption key not found at ${keyPath} or via PLATFORM_ENCRYPTION_KEY.`,
+        );
+      }
+    }
+  }
+
+  getEncryptionKey(): string {
+    return this.encryptionKey;
+  }
+
+  async onModuleInit(): Promise<void> {
+    // Pre-calculate dummy password hash to defend against timing attacks on login
+    this.dummyHash = await hashPassword('timing-defense-dummy-password-value-xyz');
   }
 
   async login(identifier?: string, password?: string): Promise<LoginResult> {
@@ -64,13 +115,6 @@ export class AuthService {
       });
     }
 
-    if (password.length < 10) {
-      throw new BadRequestException({
-        error: 'BAD_REQUEST',
-        message: 'Password must be at least 10 characters',
-      });
-    }
-
     // Find account by email or phone
     const cleanId = identifier.trim().toLowerCase();
     const account = await this.db.query.accounts.findFirst({
@@ -78,15 +122,20 @@ export class AuthService {
     });
 
     if (!account) {
+      // Run dummy password verification to equalize response timing
+      await verifyPassword(this.dummyHash, password);
       throw new UnauthorizedException({
         error: 'INVALID_CREDENTIALS',
         message: 'Invalid credentials',
       });
     }
 
-    // Check account lock
     const now = new Date();
+
+    // Check account lock
     if (account.lockedUntil && account.lockedUntil > now) {
+      // Run dummy password verification to avoid timing leak
+      await verifyPassword(account.passwordHash || this.dummyHash, password);
       throw new UnauthorizedException({
         error: 'INVALID_CREDENTIALS',
         message: 'Invalid credentials',
@@ -95,27 +144,37 @@ export class AuthService {
 
     // Check account status
     if (account.status !== 'active') {
+      await verifyPassword(account.passwordHash || this.dummyHash, password);
       throw new UnauthorizedException({
         error: 'INVALID_CREDENTIALS',
         message: 'Invalid credentials',
       });
     }
 
-    // Verify password
-    const passwordValid = await verifyPassword(account.passwordHash, password);
-    if (!passwordValid) {
-      const failedAttempts = account.failedAttempts + 1;
-      let lockedUntil: Date | null = null;
-      if (failedAttempts >= 5) {
-        lockedUntil = new Date(Date.now() + 15 * 60 * 1000); // lock 15 mins
-      }
-
+    // Reset lockout if lockout duration has passed
+    if (account.lockedUntil && account.lockedUntil <= now) {
       await this.db
         .update(schema.accounts)
         .set({
-          failedAttempts,
-          lockedUntil,
+          failedAttempts: 0,
+          lockedUntil: null,
           updatedAt: new Date(),
+        })
+        .where(eq(schema.accounts.id, account.id));
+      account.failedAttempts = 0;
+      account.lockedUntil = null;
+    }
+
+    // Verify password
+    const passwordValid = await verifyPassword(account.passwordHash, password);
+    if (!passwordValid) {
+      // Atomic increment and lock update
+      await this.db
+        .update(schema.accounts)
+        .set({
+          failedAttempts: sql`${schema.accounts.failedAttempts} + 1`,
+          updatedAt: new Date(),
+          lockedUntil: sql`CASE WHEN ${schema.accounts.failedAttempts} + 1 >= 5 THEN NOW() + INTERVAL '15 minutes' ELSE ${schema.accounts.lockedUntil} END`,
         })
         .where(eq(schema.accounts.id, account.id));
 
@@ -283,12 +342,14 @@ export class AuthService {
     const rawRefreshToken = generateRandomToken(32);
     const tokenHash = sha256(rawRefreshToken);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+    const now = new Date();
 
     await this.db.insert(schema.refreshTokens).values({
       accountId: account.id,
       membershipId: null,
       familyId: sql`gen_random_uuid()`,
       tokenHash,
+      sessionStartedAt: now,
       expiresAt,
     });
 
@@ -351,6 +412,25 @@ export class AuthService {
         error: 'ACCOUNT_DISABLED',
         message: 'Account is disabled or does not exist',
       });
+    }
+
+    // Check 12-hour session limit for Platform Admin
+    const isPlatformAdmin = account.isPlatformAdmin || !tokenRecord.membershipId;
+    if (isPlatformAdmin) {
+      const sessionStart = tokenRecord.sessionStartedAt
+        ? new Date(tokenRecord.sessionStartedAt).getTime()
+        : new Date(tokenRecord.createdAt).getTime();
+      if (Date.now() - sessionStart > 12 * 60 * 60 * 1000) {
+        await this.db
+          .update(schema.refreshTokens)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.refreshTokens.familyId, tokenRecord.familyId));
+
+        throw new UnauthorizedException({
+          error: 'SESSION_EXPIRED',
+          message: 'Platform admin session expired after 12 hours. Please log in again.',
+        });
+      }
     }
 
     // Generate new refresh token
@@ -419,7 +499,7 @@ export class AuthService {
       newAccessToken = await this.tokenService.signAccessToken(accessPayload);
     }
 
-    // Rotate token in transaction
+    // Rotate token atomically in transaction to prevent race conditions
     await this.db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(schema.refreshTokens)
@@ -428,17 +508,37 @@ export class AuthService {
           membershipId: tokenRecord.membershipId,
           familyId: tokenRecord.familyId,
           tokenHash: newTokenHash,
+          sessionStartedAt: tokenRecord.sessionStartedAt,
           expiresAt: newExpiresAt,
         })
         .returning({ id: schema.refreshTokens.id });
 
-      await tx
+      const revokedOld = await tx
         .update(schema.refreshTokens)
         .set({
           revokedAt: new Date(),
           replacedBy: inserted.id,
         })
-        .where(eq(schema.refreshTokens.id, tokenRecord.id));
+        .where(
+          and(
+            eq(schema.refreshTokens.id, tokenRecord.id),
+            sql`${schema.refreshTokens.revokedAt} IS NULL`,
+          ),
+        )
+        .returning({ id: schema.refreshTokens.id });
+
+      if (revokedOld.length === 0) {
+        // Concurrently rotated! Revoke whole family!
+        await tx
+          .update(schema.refreshTokens)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.refreshTokens.familyId, tokenRecord.familyId));
+
+        throw new UnauthorizedException({
+          error: 'TOKEN_REUSE_DETECTED',
+          message: 'Refresh token reuse detected. All tokens revoked.',
+        });
+      }
     });
 
     return {
@@ -581,12 +681,14 @@ export class AuthService {
     const rawRefreshToken = generateRandomToken(32);
     const tokenHash = sha256(rawRefreshToken);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const now = new Date();
 
     await this.db.insert(schema.refreshTokens).values({
       accountId: account.id,
       membershipId,
       familyId: sql`gen_random_uuid()`,
       tokenHash,
+      sessionStartedAt: now,
       expiresAt,
     });
 

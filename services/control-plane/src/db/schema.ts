@@ -176,6 +176,9 @@ export const refreshTokens = pgTable('refresh_tokens', {
     .references(() => memberships.id, { onDelete: 'cascade' }),
   familyId: uuid('family_id').defaultRandom().notNull(),
   tokenHash: text('token_hash').notNull(),
+  sessionStartedAt: timestamp('session_started_at', { withTimezone: true })
+    .defaultNow()
+    .notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   replacedBy: uuid('replaced_by').references((): AnyPgColumn => refreshTokens.id, {

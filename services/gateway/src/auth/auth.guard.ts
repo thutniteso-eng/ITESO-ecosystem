@@ -73,20 +73,26 @@ export class AuthGuard implements CanActivate {
       });
     }
 
+    // Tenant endpoints require tenant token with both tid and mid
+    if (!payload.tid || !payload.mid) {
+      throw new ForbiddenException({
+        error: 'PLATFORM_TOKEN_NOT_ALLOWED',
+        message: 'Platform tokens without tenant context are not permitted on tenant endpoints',
+      });
+    }
+
     // Tenant mismatch check
     const headerTenant = req.headers['x-tenant'];
-    if (headerTenant && payload.tid && headerTenant !== payload.tid) {
+    if (headerTenant && headerTenant !== payload.tid) {
       throw new ForbiddenException({
         error: 'TENANT_MISMATCH',
         message: `X-Tenant header '${headerTenant}' does not match token tenant '${payload.tid}'`,
       });
     }
 
-    // Permission check
+    // Permission check: strictly check permission against payload.perms (no wildcard bypass)
     const userPerms: string[] = Array.isArray(payload.perms) ? payload.perms : [];
-    const isSuperAdmin = payload.is_platform_admin === true || userPerms.includes('*');
-
-    if (requiredPermission && !isSuperAdmin && !userPerms.includes(requiredPermission)) {
+    if (requiredPermission && !userPerms.includes(requiredPermission)) {
       throw new ForbiddenException({
         error: 'PERMISSION_DENIED',
         permission: requiredPermission,

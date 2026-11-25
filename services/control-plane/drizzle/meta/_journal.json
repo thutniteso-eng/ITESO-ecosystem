@@ -15,6 +15,13 @@
       "when": 1795641381323,
       "tag": "0001_soft_malcolm_colcord",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795650000000,
+      "tag": "0002_add_session_started_at",
+      "breakpoints": true
     }
   ]
 }

@@ -143,6 +143,16 @@ async function run() {
   // CRITERION 8 (Part 1 - Auth): Authenticate Super Admin via TOTP
   // ---------------------------------------------------------------------------
   console.log('--- Criterion 8 (Setup): Authenticating Super Admin via Password + TOTP ---');
+  // Ensure Super Admin account exists in database
+  try {
+    execSync(
+      `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node dist/cli/create-platform-admin.js --email admin@platform.local --password "${ADMIN_PASSWORD}" --totp-secret "${TOTP_SECRET}"`,
+      { cwd: projectRoot, stdio: 'ignore' },
+    );
+  } catch {
+    // Ignored if already created
+  }
+
   // First verify old X-Admin-Token fails with 401
   const oldAdminRes = await fetch(`${CONTROL_PLANE_URL}/admin/tenants`, {
     headers: { 'X-Admin-Token': 'change_me_admin_token_secret_123' },
@@ -162,6 +172,13 @@ async function run() {
   assert(adminLogin.challenge_token, 'Admin received challenge_token');
   console.log('✓ Admin login step 1 returns next: "totp" and single-use challenge_token');
 
+  // Verify challenge_token CANNOT be used as Bearer token on /v1/odoo/version
+  const challengeAsBearerRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${adminLogin.challenge_token}` },
+  });
+  assert(challengeAsBearerRes.status === 401, `Challenge token as Bearer rejected with 401 (got ${challengeAsBearerRes.status})`);
+  console.log('✓ Challenge token rejected on Gateway /v1 -> 401 UNAUTHENTICATED (typ confusion prevented)');
+
   // Generate TOTP code
   const totpCode = execSync(`node scripts/get-totp.js ${TOTP_SECRET}`).toString().trim();
   console.log(`Generated TOTP code from secret: ${totpCode}`);
@@ -176,7 +193,19 @@ async function run() {
   const adminTokens = await totpRes.json();
   assert(adminTokens.access_token, 'Super admin received access_token');
   const adminToken = adminTokens.access_token;
-  console.log('✓ Admin login step 2 verified TOTP and issued Super Admin token with amr: ["pwd", "otp"]\n');
+  console.log('✓ Admin login step 2 verified TOTP and issued Super Admin token with amr: ["pwd", "otp"]');
+
+  // Verify Super Admin token is BLOCKED on tenant endpoints /v1/odoo/version
+  const adminOnTenantRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: {
+      Authorization: `Bearer ${adminToken}`,
+      'X-Tenant': 'demo_fnb',
+    },
+  });
+  assert(adminOnTenantRes.status === 403, `Admin on tenant endpoint status 403 (got ${adminOnTenantRes.status})`);
+  const adminOnTenantBody = await adminOnTenantRes.json();
+  assert(adminOnTenantBody.error === 'PLATFORM_TOKEN_NOT_ALLOWED', `Returned PLATFORM_TOKEN_NOT_ALLOWED (got ${adminOnTenantBody.error})`);
+  console.log('✓ Super Admin token calling /v1/odoo/version blocked -> 403 PLATFORM_TOKEN_NOT_ALLOWED\n');
 
   // ---------------------------------------------------------------------------
   // CRITERION 5: 5 wrong passwords -> 6th with correct password locked (INVALID_CREDENTIALS)

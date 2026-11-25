@@ -107,9 +107,11 @@ describe('Control Plane Endpoints (TASK-003)', () => {
       jest.spyOn(internalAuth.db, 'update').mockReturnValue({
         set: (data: Partial<MockAccountState>) => ({
           where: () => {
+            const currentAttempts = lockedAccountState?.failedAttempts ?? mockAccount.failedAttempts;
+            const newAttempts = typeof data.failedAttempts === 'number' ? data.failedAttempts : currentAttempts + 1;
             lockedAccountState = {
-              failedAttempts: data.failedAttempts ?? 0,
-              lockedUntil: data.lockedUntil ?? null,
+              failedAttempts: newAttempts,
+              lockedUntil: newAttempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : (data.lockedUntil ?? null),
             };
             return Promise.resolve();
           },
@@ -213,6 +215,106 @@ describe('Control Plane Endpoints (TASK-003)', () => {
       await expect(authService.refresh('reused_raw_token')).rejects.toThrow('Refresh token reuse detected');
       expect(familyRevoked).toBe(true);
     });
+
+    it('expires platform admin session and revokes family when session exceeds 12 hours', async () => {
+      let familyRevoked = false;
+      const expiredSessionRecord = {
+        id: 'tok-admin-1',
+        accountId: 'acc-admin',
+        membershipId: null, // Platform Admin
+        familyId: 'fam-admin-1',
+        tokenHash: 'somehash',
+        sessionStartedAt: new Date(Date.now() - 13 * 60 * 60 * 1000), // 13h ago
+        expiresAt: new Date(Date.now() + 100000),
+        revokedAt: null,
+        replacedBy: null,
+      };
+
+      const adminAccount = {
+        id: 'acc-admin',
+        status: 'active' as const,
+        isPlatformAdmin: true,
+      };
+
+      const internalAuth = authService as unknown as MockAuthServiceInternal;
+      jest.spyOn(internalAuth.db.query.refreshTokens, 'findFirst').mockResolvedValue(expiredSessionRecord);
+      jest.spyOn(internalAuth.db.query.accounts, 'findFirst').mockResolvedValue(adminAccount);
+      jest.spyOn(internalAuth.db, 'update').mockReturnValue({
+        set: (data: Partial<MockAccountState>) => ({
+          where: () => {
+            if (data.revokedAt) familyRevoked = true;
+            return Promise.resolve();
+          },
+        }),
+      });
+
+      await expect(authService.refresh('admin_refresh_token')).rejects.toThrow('Platform admin session expired after 12 hours');
+      expect(familyRevoked).toBe(true);
+    });
+
+    it('detects concurrent refresh rotation and revokes family on race condition', async () => {
+      const validTokenRecord = {
+        id: 'tok-race-1',
+        accountId: 'acc-1',
+        membershipId: 'mem-1',
+        familyId: 'fam-race-1',
+        tokenHash: 'somehash',
+        sessionStartedAt: new Date(),
+        expiresAt: new Date(Date.now() + 100000),
+        revokedAt: null,
+        replacedBy: null,
+      };
+
+      const account = {
+        id: 'acc-1',
+        status: 'active' as const,
+        isPlatformAdmin: false,
+      };
+
+      interface MockTx {
+        insert: () => { values: () => { returning: () => Array<{ id: string }> } };
+        update: () => { set: () => { where: () => { returning: () => Array<{ id: string }> } } };
+      }
+
+      const internalAuth = authService as unknown as {
+        db: {
+          query: {
+            refreshTokens: { findFirst: () => Promise<unknown> };
+            accounts: { findFirst: () => Promise<unknown> };
+            memberships: { findFirst: () => Promise<unknown> };
+            tenants: { findFirst: () => Promise<unknown> };
+          };
+          transaction: (cb: (tx: MockTx) => Promise<unknown>) => Promise<unknown>;
+        };
+        getMembershipRolesAndPerms: () => Promise<{ roles: string[]; perms: string[] }>;
+      };
+
+      jest.spyOn(internalAuth.db.query.refreshTokens, 'findFirst').mockResolvedValue(validTokenRecord);
+      jest.spyOn(internalAuth.db.query.accounts, 'findFirst').mockResolvedValue(account);
+      jest.spyOn(internalAuth.db.query.memberships, 'findFirst').mockResolvedValue({ id: 'mem-1', tenantId: 't-1', status: 'active' });
+      jest.spyOn(internalAuth.db.query.tenants, 'findFirst').mockResolvedValue({ id: 't-1', code: 'demo_fnb', status: 'active' });
+      jest.spyOn(internalAuth, 'getMembershipRolesAndPerms').mockResolvedValue({ roles: ['Chủ'], perms: [] });
+
+      jest.spyOn(internalAuth.db, 'transaction').mockImplementation(async (callback) => {
+        const fakeTx: MockTx = {
+          insert: () => ({
+            values: () => ({
+              returning: () => [{ id: 'new-tok-id' }],
+            }),
+          }),
+          update: () => ({
+            set: () => ({
+              where: () => ({
+                returning: () => [], // Simulating 0 rows affected
+              }),
+            }),
+          }),
+        };
+        return callback(fakeTx);
+      });
+
+      await expect(authService.refresh('concurrent_token')).rejects.toThrow('Refresh token reuse detected');
+    });
   });
 
   describe('Super Admin TOTP Flow & PlatformAdminGuard', () => {
@@ -263,7 +365,7 @@ describe('Control Plane Endpoints (TASK-003)', () => {
 
     it('verifies TOTP code correctly during login flow', async () => {
       const totpSecret = generateBase32Secret(32);
-      const encSecret = encryptAesGcm(totpSecret, process.env.PLATFORM_ENCRYPTION_KEY || 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=');
+      const encSecret = encryptAesGcm(totpSecret, authService.getEncryptionKey());
 
       const adminAccount = {
         id: 'admin-uuid',

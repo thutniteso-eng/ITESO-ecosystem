@@ -40,8 +40,8 @@ export class FeatureFlagGuard implements CanActivate {
       });
     }
 
-    const tenantCode: string | undefined =
-      req.tenantCode || req.user?.tid || (req.headers['x-tenant'] as string | undefined);
+    // Read exclusively from req.tenantCode or req.user.tid (set by AuthGuard from token)
+    const tenantCode: string | undefined = req.tenantCode || req.user?.tid;
 
     const isEnabled = await this.platformService.isFeatureEnabled(
       tenantCode,

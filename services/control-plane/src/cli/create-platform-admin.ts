@@ -1,5 +1,7 @@
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as schema from '../db/schema';
 import {
   encryptAesGcm,
@@ -39,9 +41,17 @@ async function main() {
     process.exit(1);
   }
 
-  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
-  if (!encryptionKey) {
-    console.error('PLATFORM_ENCRYPTION_KEY environment variable is required');
+  let encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
+  const keyPath =
+    process.env.PLATFORM_ENCRYPTION_KEY_PATH ||
+    path.resolve(__dirname, '../../../../infra/secrets/platform_encryption.key');
+
+  if (fs.existsSync(keyPath)) {
+    encryptionKey = fs.readFileSync(keyPath, 'utf8').trim();
+  }
+
+  if (!encryptionKey || Buffer.from(encryptionKey, 'base64').length !== 32) {
+    console.error('FATAL: Valid 32-byte PLATFORM_ENCRYPTION_KEY or key file at PLATFORM_ENCRYPTION_KEY_PATH is required');
     process.exit(1);
   }
 

@@ -9,14 +9,27 @@ mkdir -p "${SECRETS_DIR}"
 
 PRIV_KEY="${SECRETS_DIR}/ed25519_private.pem"
 PUB_KEY="${SECRETS_DIR}/ed25519_public.pem"
+ENC_KEY="${SECRETS_DIR}/platform_encryption.key"
 
 if [ ! -f "${PRIV_KEY}" ] || [ ! -f "${PUB_KEY}" ]; then
   echo "[generate-keys] Generating Ed25519 keypair in ${SECRETS_DIR}..."
   openssl genpkey -algorithm ed25519 -out "${PRIV_KEY}"
   openssl pkey -in "${PRIV_KEY}" -pubout -out "${PUB_KEY}"
-  chmod 644 "${PRIV_KEY}"
-  chmod 644 "${PUB_KEY}"
   echo "[generate-keys] Keypair generated successfully."
 else
-  echo "[generate-keys] Keypair already exists, skipping generation."
+  echo "[generate-keys] Keypair already exists."
 fi
+
+if [ ! -f "${ENC_KEY}" ]; then
+  echo "[generate-keys] Generating 32-byte AES-256 encryption key in ${ENC_KEY}..."
+  openssl rand -base64 32 | tr -d '\r\n' > "${ENC_KEY}"
+  echo "[generate-keys] Encryption key generated successfully."
+else
+  echo "[generate-keys] Encryption key already exists."
+fi
+
+# Ensure strict permissions: chmod 600 for private and symmetric keys, 644 for public key
+chmod 600 "${PRIV_KEY}"
+chmod 600 "${ENC_KEY}"
+chmod 644 "${PUB_KEY}"
+echo "[generate-keys] File permissions verified: private keys chmod 600, public key chmod 644."

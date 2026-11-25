@@ -281,3 +281,274 @@ iteso-ecosystem-odoo-1            odoo:20.0-20261123              "/bin/sh /etc/
 iteso-ecosystem-postgres-1        postgres:16.16-alpine           "docker-entrypoint.s…"   postgres        12 minutes ago   Up 12 minutes (healthy)   5432/tcp
 iteso-ecosystem-redis-1           redis:7.4.12-alpine             "docker-entrypoint.s…"   redis           11 minutes ago   Up 11 minutes (healthy)   6379/tcp
 ```
+
+---
+
+## Vòng 2
+
+Thực hiện đầy đủ 10 điểm trong mục "Bắt buộc sửa (vòng 2)" theo đánh giá của kiến trúc sư Claude:
+
+### 1. Chặn Super Admin token dùng trên endpoint tenant (`/v1/*`)
+- Trong [services/gateway/src/auth/auth.guard.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/auth/auth.guard.ts):
+  - Trên mọi route non-public thuộc `/v1`: kiểm tra bắt buộc phải có đồng thời `payload.tid` và `payload.mid`. Nếu thiếu một trong hai, ném ngay `403 PLATFORM_TOKEN_NOT_ALLOWED`.
+  - Xóa bỏ hoàn toàn cơ chế bypass quyền qua `is_platform_admin === true` hoặc wildcard `perms.includes('*')`. Mọi route yêu cầu quyền đều phải so khớp chính xác: `userPerms.includes(requiredPermission)`.
+  - Xóa bỏ việc đọc `req.headers['x-tenant']` trong các controller ([services/gateway/src/odoo/odoo.controller.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/odoo/odoo.controller.ts), [services/gateway/src/features/features.controller.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/features/features.controller.ts)) và [services/gateway/src/features/feature-flag.guard.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/features/feature-flag.guard.ts). Chỉ duy nhất `AuthGuard` đọc `req.headers['x-tenant']` để so sánh với `payload.tid` (nếu có header và lệch tenant trả ngay `403 TENANT_MISMATCH`). Các controller và guard khác lấy tenant context từ `req.tenantCode` (do `AuthGuard` gán từ token).
+
+### 2. Xử lý khóa mã hóa AES thiếu hoặc sai độ dài
+- Cập nhật [scripts/generate-keys.sh](file:///home/iteso/projects/ITESO-ecosystem/scripts/generate-keys.sh) sinh 32-byte key AES-256 ngẫu nhiên bằng `openssl rand -base64 32`, ghi ra file `infra/secrets/platform_encryption.key` với quyền `chmod 600`.
+- Xóa bỏ giá trị hardcode `PLATFORM_ENCRYPTION_KEY` khỏi [.env.example](file:///home/iteso/projects/ITESO-ecosystem/.env.example).
+- Cập nhật [infra/docker-compose.yml](file:///home/iteso/projects/ITESO-ecosystem/infra/docker-compose.yml) mount file `platform_encryption.key` read-only vào `/app/secrets/platform_encryption.key` và truyền biến `PLATFORM_ENCRYPTION_KEY_PATH`.
+- Trong [services/control-plane/src/auth/auth.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/auth/auth.service.ts) và [services/control-plane/src/cli/create-platform-admin.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/cli/create-platform-admin.ts):
+  - Tải khóa từ file hoặc biến môi trường, kiểm tra `Buffer.from(key, 'base64').length === 32`.
+  - Nếu thiếu hoặc sai độ dài: ném fatal error khiến service dừng ngay khi khởi động (`crash on startup`), chỉ cho phép dummy fallback khi `NODE_ENV === 'test'`.
+
+### 3. Xử lý khóa Ed25519 không tồn tại
+- Trong [services/control-plane/src/auth/token.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/auth/token.service.ts): nếu file `ed25519_private.pem` không tồn tại, chỉ sinh ephemeral key khi `NODE_ENV === 'test'`. Ở môi trường thường, ném fatal error dừng service. Đồng thời suy diễn public key từ private key hoặc tải từ `ed25519_public.pem`.
+- Trong [services/gateway/src/auth/jwt-verifier.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/auth/jwt-verifier.service.ts): nếu không tìm thấy file `ed25519_public.pem`, ném fatal error dừng service khi khởi động (chỉ cho phép bypass khi `NODE_ENV === 'test'`).
+
+### 4. Phân loại token và chống token confusion
+- Trong [services/control-plane/src/auth/token.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/auth/token.service.ts):
+  - Hàm `signAccessToken` bắt buộc gán `typ: 'access'`, `aud: 'iteso-api'`, `iss: 'iteso-control-plane'`, và header `kid: this.kid`.
+- Trong [services/gateway/src/auth/jwt-verifier.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/gateway/src/auth/jwt-verifier.service.ts) và `token.service.ts`:
+  - Khi xác minh access token: kiểm tra bắt buộc `verified.protectedHeader.kid === expectedKid`, `verified.payload.typ === 'access'`, `verified.payload.aud === 'iteso-api'`.
+  - Các token loại khác như `challenge_token` (`typ: 'challenge'`) hay `selection_token` (`typ: 'selection'`) khi gửi đến Gateway đều bị từ chối với `401 UNAUTHENTICATED`.
+
+### 5. Giới hạn phiên Super Admin 12h
+- Cập nhật [services/control-plane/src/db/schema.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/db/schema.ts) thêm cột:
+  `sessionStartedAt: timestamp('session_started_at', { withTimezone: true }).defaultNow().notNull()` vào bảng `refresh_tokens`.
+- Tạo migration [services/control-plane/drizzle/0002_add_session_started_at.sql](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/drizzle/0002_add_session_started_at.sql) và cập nhật journal.
+- Trong `AuthService`:
+  - Khởi tạo `sessionStartedAt: new Date()` khi cấp refresh token ban đầu.
+  - Khi quay vòng refresh token: giữ nguyên `sessionStartedAt: tokenRecord.sessionStartedAt` từ token gốc của phiên.
+  - Trong `refresh()`: với tài khoản Platform Admin (`tokenRecord.membershipId == null` hoặc `account.isPlatformAdmin`), kiểm tra nếu `Date.now() - sessionStartedAt > 12 * 60 * 60 * 1000` thì thu hồi toàn bộ token family và trả lỗi `401 SESSION_EXPIRED`.
+
+### 6. Chống tấn công timing trong luồng login
+- Trong [services/control-plane/src/auth/auth.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/auth/auth.service.ts):
+  - Trong `onModuleInit()`: tính toán trước mật khẩu mẫu bằng Argon2id: `this.dummyHash = await hashPassword('timing-defense-dummy-password-value-xyz')`.
+  - Trong `login()`:
+    - Khi không tìm thấy tài khoản: thực hiện `await verifyPassword(this.dummyHash, password)` để đảm bảo thời gian xử lý đồng đều, sau đó trả `401 INVALID_CREDENTIALS`.
+    - Khi tài khoản đang bị khóa (`lockedUntil > now`): thực hiện `await verifyPassword(account.passwordHash || this.dummyHash, password)` rồi trả `401 INVALID_CREDENTIALS`.
+    - Khi tài khoản không active (`status !== 'active'`): thực hiện tương tự.
+
+### 7. Atomic update cho failed attempts counter và loại bỏ check password length ở login
+- Xóa bỏ hoàn toàn kiểm tra `password.length < 10` khỏi hàm `login()` trong `auth.service.ts` để attacker không thể dò rule mật khẩu qua thông điệp lỗi. Quy tắc độ dài tối thiểu 10 ký tự vẫn được giữ nguyên ở các endpoint đăng ký tài khoản / đổi mật khẩu / CLI tạo admin.
+- Nếu tài khoản đã hết hạn khóa (`lockedUntil <= now`), reset `failedAttempts = 0, lockedUntil = null` trước khi kiểm tra mật khẩu.
+- Khi sai mật khẩu: cập nhật số lần thử sai bằng biểu thức SQL nguyên tử (atomic update):
+  ```sql
+  UPDATE accounts
+  SET failed_attempts = failed_attempts + 1,
+      updated_at = NOW(),
+      locked_until = CASE WHEN failed_attempts + 1 >= 5 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END
+  WHERE id = ${account.id}
+  ```
+
+### 8. Atomic refresh token rotation / race condition
+- Trong hàm `refresh()` của [services/control-plane/src/auth/auth.service.ts](file:///home/iteso/projects/ITESO-ecosystem/services/control-plane/src/auth/auth.service.ts):
+  - Thực hiện thu hồi token cũ bằng điều kiện nguyên tử trong transaction:
+    ```typescript
+    const revokedOld = await tx
+      .update(schema.refreshTokens)
+      .set({ revokedAt: new Date(), replacedBy: inserted.id })
+      .where(and(eq(schema.refreshTokens.id, tokenRecord.id), sql`${schema.refreshTokens.revokedAt} IS NULL`))
+      .returning({ id: schema.refreshTokens.id });
+    ```
+  - Nếu `revokedOld.length === 0`: phát hiện race condition (2 request refresh token đồng thời), lập tức thu hồi toàn bộ token family và trả `401 TOKEN_REUSE_DETECTED`.
+
+### 9. Bảo mật file secrets và quyền truy cập
+- Trong [scripts/generate-keys.sh](file:///home/iteso/projects/ITESO-ecosystem/scripts/generate-keys.sh):
+  - Các file bí mật (`ed25519_private.pem`, `platform_encryption.key`) được set quyền `chmod 600`.
+  - Khóa công khai (`ed25519_public.pem`) được set quyền `chmod 644`.
+- **Giải trình UID mapping giữa host và container:**
+  - Trên máy host (WSL), user sở hữu thư mục dự án là `iteso` có UID = 1000, GID = 1000.
+  - Trong Docker image Node.js (`node:24.22.3-alpine`), user mặc định chạy tiến trình Node.js là user `node` cũng có UID = 1000, GID = 1000.
+  - Do UID trên host và bên trong container trùng nhau (1000), container khi mount file với quyền `600` (chỉ chủ sở hữu đọc/ghi) hoàn toàn đọc được file bí mật (nhờ cờ `ro` ngăn ghi), đồng thời các user khác trên host hoặc các container không đặc quyền khác không thể đọc được.
+
+### 10. Biến `DEMO_ACCOUNTS_PASSWORD` bắt buộc trong `.env`
+- Cập nhật [infra/docker-compose.yml](file:///home/iteso/projects/ITESO-ecosystem/infra/docker-compose.yml): sử dụng cú pháp bắt buộc của Compose:
+  `${DEMO_ACCOUNTS_PASSWORD:?DEMO_ACCOUNTS_PASSWORD is required in .env}`
+  cho service `control-plane`. Nếu biến này thiếu hoặc rỗng, Compose sẽ báo lỗi và từ chối khởi động.
+
+---
+
+### Kết quả kiểm thử thực tế Vòng 2
+
+#### Output `make test`:
+```text
+pnpm --filter @iteso/control-plane test
+
+> @iteso/control-plane@0.1.0 test /home/iteso/projects/ITESO-ecosystem/services/control-plane
+> jest
+
+PASS test/app.spec.ts
+  Control Plane Endpoints (TASK-003)
+    Password Hashing & Lockout Logic (Crypto & Auth)
+      ✓ hashes password with Argon2id and verifies correctly (341 ms)
+      ✓ locks account after 5 consecutive failed attempts and unlocks after 15 minutes (468 ms)
+    Single-use Tokens & Token Reuse Detection
+      ✓ rejects reusing a selection_token or challenge_token (70 ms)
+      ✓ revokes entire token family when a reused refresh token is submitted (90 ms)
+      ✓ expires platform admin session and revokes family when session exceeds 12 hours (71 ms)
+      ✓ detects concurrent refresh rotation and revokes family on race condition (65 ms)
+    Super Admin TOTP Flow & PlatformAdminGuard
+      ✓ returns 401 when old X-Admin-Token is used (TASK-002 token removed) (130 ms)
+      ✓ returns 401 when Super Admin token lacks otp in amr (206 ms)
+      ✓ allows access when valid Super Admin token with amr ["pwd", "otp"] is provided (395 ms)
+      ✓ verifies TOTP code correctly during login flow (288 ms)
+    Admin API Body Validation & Endpoints
+      ✓ returns 400 when enabled is not a boolean (e.g. string "false") (92 ms)
+      ✓ returns 400 when note exceeds 500 characters (55 ms)
+    ControlPlaneService Logic (Audit log records real actor UUID & NATS event)
+      ✓ throws 409 FEATURE_NOT_IMPLEMENTED when attempting to enable a not_implemented feature (151 ms)
+      ✓ updates available feature, creates audit log with real actor, and publishes to NATS (110 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       14 passed, 14 total
+Snapshots:   0 total
+Time:        7.551 s
+Ran all test suites.
+
+pnpm --filter @iteso/gateway test
+
+> @iteso/gateway@0.1.0 test /home/iteso/projects/ITESO-ecosystem/services/gateway
+> jest
+
+[Nest] 1569756  - 11/26/2026, 6:29:03 AM   ERROR [AuthGuard] Undeclared permission on v1 endpoint: GET /v1/test-no-permission
+[Nest] 1569756  - 11/26/2026, 6:29:03 AM   ERROR [FeatureFlagGuard] Undeclared feature on v1 endpoint: GET /v1/test-no-feature
+PASS test/app.spec.ts (14.717 s)
+  Gateway endpoints (TASK-003)
+    GET /health
+      ✓ returns 200 and ok for all 5 components without needing token or @RequireFeature (1307 ms)
+    AuthGuard & Token Verification on /v1
+      ✓ returns 401 UNAUTHENTICATED when Authorization header is missing (81 ms)
+      ✓ returns 401 UNAUTHENTICATED when token is expired (86 ms)
+      ✓ returns 401 UNAUTHENTICATED when token is signed with a different key (84 ms)
+      ✓ returns 401 UNAUTHENTICATED when token kid does not match (72 ms)
+      ✓ returns 401 UNAUTHENTICATED when challenge token is used as Bearer token (71 ms)
+      ✓ returns 403 PLATFORM_TOKEN_NOT_ALLOWED when Platform Admin token without tenant context is used (45 ms)
+      ✓ returns 403 PERMISSION_DENIED when user lacks required permission (e.g. cashier calling diagnostics) (71 ms)
+      ✓ returns 403 TENANT_MISMATCH when X-Tenant header differs from tid in token (140 ms)
+      ✓ returns 403 PERMISSION_UNDECLARED when endpoint lacks @RequirePermission and @Public (63 ms)
+      ✓ returns 403 FEATURE_UNDECLARED when endpoint lacks @RequireFeature (37 ms)
+      ✓ returns 200 when user has valid token, correct permission, and feature is enabled (71 ms)
+    Feature Flag Evaluation Matrix (Real SQL simulation via mock Pool)
+      ✓ case 1: feature is platform_enabled = false -> returns false (35 ms)
+      ✓ case 2: tenant override = false -> returns false (37 ms)
+      ✓ case 3: no tenant row, default_enabled = true -> returns true (25 ms)
+      ✓ case 4: no tenant row, default_enabled = false -> returns false (39 ms)
+      ✓ case 5: implementation_status = not_implemented -> returns false (39 ms)
+      ✓ case 6: feature key does not exist -> returns false (23 ms)
+      ✓ caching: does not query database again within 30 seconds (28 ms)
+      ✓ caching: queries database again after clearCache (e.g. on NATS event) (13 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       20 passed, 20 total
+Snapshots:   0 total
+Time:        13.248 s
+Ran all test suites.
+
+./scripts/test-db-isolation.sh
+[test-db-isolation] Verifying 'iteso_gateway' can connect to 'platform' and SELECT tenants...
+[test-db-isolation] Verifying 'iteso_gateway' is DENIED access to 't_demo_fnb' (res_users)...
+[test-db-isolation] Verifying 'iteso_gateway' cannot write to 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' cannot SELECT from 'admin_audit_log' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' cannot SELECT from 'accounts' in 'platform'...
+[test-db-isolation] PASS: All database isolation checks passed cleanly.
+
+./scripts/test-odoo-module.sh
+[test-odoo-module] Dropping any leftover 't_test_iteso_base'...
+[test-odoo-module] Installing 'iteso_base' into fresh database 't_test_iteso_base'...
+[secure-tenant-db] Securing database 't_test_iteso_base' (revoking access from PUBLIC and 'iteso_gateway')...
+REVOKE
+REVOKE
+[test-odoo-module] PASS: iteso_base installed cleanly in 't_test_iteso_base' (state=installed).
+
+node ./scripts/test-acceptance-criteria.js
+=================================================================
+STARTING TASK-003 ACCEPTANCE CRITERIA VERIFICATION
+=================================================================
+
+--- Criterion 1: Keypair generation and secrets isolation ---
+✓ Ed25519 keypair exists in infra/secrets/
+✓ git status verifies infra/secrets/ and .env are completely ignored.
+
+--- Criterion 2: owner@demo.local login and GET /v1/me ---
+✓ owner login successful (access_token received, expires_in: 900s)
+GET /v1/me response: {
+  "account": {
+    "id": "12c07faf-927c-41a5-97f0-defc72ab9d91",
+    "email": "owner@demo.local",
+    "phone": "+84900000001",
+    "isPlatformAdmin": false
+  },
+  "tenant": "demo_fnb",
+  "membershipId": "cb6aa112-657e-4eb0-9b91-99f70ea383f7",
+  "roles": [
+    "Chủ"
+  ],
+  "perms": [
+    "system.diagnostics.view",
+    "settings.manage",
+    "settings.roles.manage",
+    "pos.order.create",
+    "pos.order.void",
+    "pos.discount.apply",
+    "report.revenue.view",
+    "inventory.manage",
+    "accounting.view",
+    "system.features.read"
+  ]
+}
+✓ Criterion 2 verified: tenant=demo_fnb, role=Chủ, full permissions including system.features.read.
+
+--- Criterion 3: GET /v1/odoo/version authorization checks ---
+✓ 3.1 No token -> 401 UNAUTHENTICATED
+✓ 3.2 Cashier token lacking system.diagnostics.view -> 403 PERMISSION_DENIED
+✓ 3.3 Owner token -> 200 OK (Odoo version: 20.0-20261123)
+
+--- Criterion 4: Tenant header mismatch verification ---
+✓ Criterion 4 verified: {"error":"TENANT_MISMATCH","message":"X-Tenant header 'demo_fnb2' does not match token tenant 'demo_fnb'"}
+
+--- Criterion 8 (Setup): Authenticating Super Admin via Password + TOTP ---
+✓ Old X-Admin-Token rejected with 401 UNAUTHORIZED (header token eliminated)
+✓ Admin login step 1 returns next: "totp" and single-use challenge_token
+✓ Challenge token rejected on Gateway /v1 -> 401 UNAUTHENTICATED (typ confusion prevented)
+Generated TOTP code from secret: 493068
+✓ Admin login step 2 verified TOTP and issued Super Admin token with amr: ["pwd", "otp"]
+✓ Super Admin token calling /v1/odoo/version blocked -> 403 PLATFORM_TOKEN_NOT_ALLOWED
+
+--- Criterion 5: Account lockout after 5 consecutive failed attempts ---
+✓ Attempt 1 (wrong password) -> 401 INVALID_CREDENTIALS
+✓ Attempt 2 (wrong password) -> 401 INVALID_CREDENTIALS
+✓ Attempt 3 (wrong password) -> 401 INVALID_CREDENTIALS
+✓ Attempt 4 (wrong password) -> 401 INVALID_CREDENTIALS
+✓ Attempt 5 (wrong password) -> 401 INVALID_CREDENTIALS
+✓ Attempt 6 (correct password on locked account) -> 401 INVALID_CREDENTIALS
+✓ Criterion 5 verified cleanly.
+
+--- Criterion 6: Refresh token rotation and reuse detection ---
+✓ 6.1 Successfully refreshed token (RT1 -> RT2)
+✓ 6.2 Reusing RT1 detected token theft -> 401 TOKEN_REUSE_DETECTED
+✓ 6.3 Using RT2 from revoked family rejected -> 401 TOKEN_REUSE_DETECTED
+✓ Criterion 6 verified cleanly.
+
+--- Criterion 7: multi@demo.local tenant selection flow ---
+✓ 7.1 multi@demo.local receives next: "select_tenant" with tenants: [ 'demo_fnb', 'demo_fnb2' ]
+✓ 7.2 select-tenant issued token with tid=demo_fnb2, /v1/me confirmed tenant=demo_fnb2
+✓ Criterion 7 verified cleanly.
+
+--- Criterion 8: Feature toggle scenario with Super Admin token and audit log ---
+✓ 8.1 Feature system.odoo_version disabled via Super Admin token
+✓ 8.2 Gateway immediately rejected call -> 403 FEATURE_DISABLED
+✓ 8.3 Feature system.odoo_version re-enabled via Super Admin token
+✓ 8.4 Gateway call succeeds immediately -> 200 OK
+Latest audit log actor: 44e4a2e8-1f1c-497e-af16-ec5af7a75a9f
+✓ 8.5 Verified admin_audit_log records real actor UUID in platform database
+✓ Criterion 8 verified cleanly.
+
+--- Criterion 10: Git history verification for secrets ---
+✓ Git history contains no private keys, .env, or committed secrets.
+
+=================================================================
+ALL ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!
+=================================================================
+```

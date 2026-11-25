@@ -100,8 +100,13 @@ describe('Gateway endpoints (TASK-003)', () => {
     const kid = options?.kid ?? testKid;
     const exp = options?.exp ?? '15m';
 
-    const jwt = new jose.SignJWT(payload)
+    const jwt = new jose.SignJWT({
+      typ: 'access',
+      ...payload,
+    })
       .setProtectedHeader({ alg: 'EdDSA', kid })
+      .setIssuer('iteso-control-plane')
+      .setAudience('iteso-api')
       .setIssuedAt();
 
     if (exp === '0s') {
@@ -138,7 +143,7 @@ describe('Gateway endpoints (TASK-003)', () => {
 
     it('returns 401 UNAUTHENTICATED when token is expired', async () => {
       const expiredToken = await createToken(
-        { sub: 'user-1', tid: 'demo_fnb', perms: ['system.diagnostics.view'] },
+        { sub: 'user-1', tid: 'demo_fnb', mid: 'mem-1', perms: ['system.diagnostics.view'] },
         { exp: '0s' },
       );
 
@@ -152,7 +157,7 @@ describe('Gateway endpoints (TASK-003)', () => {
 
     it('returns 401 UNAUTHENTICATED when token is signed with a different key', async () => {
       const untrustedToken = await createToken(
-        { sub: 'user-1', tid: 'demo_fnb', perms: ['system.diagnostics.view'] },
+        { sub: 'user-1', tid: 'demo_fnb', mid: 'mem-1', perms: ['system.diagnostics.view'] },
         { key: otherPrivateKey },
       );
 
@@ -166,7 +171,7 @@ describe('Gateway endpoints (TASK-003)', () => {
 
     it('returns 401 UNAUTHENTICATED when token kid does not match', async () => {
       const wrongKidToken = await createToken(
-        { sub: 'user-1', tid: 'demo_fnb', perms: ['system.diagnostics.view'] },
+        { sub: 'user-1', tid: 'demo_fnb', mid: 'mem-1', perms: ['system.diagnostics.view'] },
         { kid: 'wrong-key-id' },
       );
 
@@ -178,10 +183,42 @@ describe('Gateway endpoints (TASK-003)', () => {
       expect(res.body.error).toBe('UNAUTHENTICATED');
     });
 
+    it('returns 401 UNAUTHENTICATED when challenge token is used as Bearer token', async () => {
+      const challengeToken = await new jose.SignJWT({ sub: 'user-1', typ: 'challenge' })
+        .setProtectedHeader({ alg: 'EdDSA', kid: testKid })
+        .setIssuer('iteso-control-plane')
+        .setAudience('iteso-api')
+        .setExpirationTime('5m')
+        .sign(testPrivateKey);
+
+      const res = await request(app.getHttpServer())
+        .get('/v1/odoo/version')
+        .set('Authorization', `Bearer ${challengeToken}`)
+        .expect(401);
+
+      expect(res.body.error).toBe('UNAUTHENTICATED');
+    });
+
+    it('returns 403 PLATFORM_TOKEN_NOT_ALLOWED when Platform Admin token without tenant context is used', async () => {
+      const platformAdminToken = await createToken({
+        sub: 'admin-1',
+        is_platform_admin: true,
+        perms: ['*'],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/v1/odoo/version')
+        .set('Authorization', `Bearer ${platformAdminToken}`)
+        .expect(403);
+
+      expect(res.body.error).toBe('PLATFORM_TOKEN_NOT_ALLOWED');
+    });
+
     it('returns 403 PERMISSION_DENIED when user lacks required permission (e.g. cashier calling diagnostics)', async () => {
       const cashierToken = await createToken({
         sub: 'cashier-1',
         tid: 'demo_fnb',
+        mid: 'mem-1',
         roles: ['Thu ngân'],
         perms: ['pos.order.create', 'pos.discount.apply', 'system.features.read'], // Missing system.diagnostics.view
       });
@@ -199,6 +236,7 @@ describe('Gateway endpoints (TASK-003)', () => {
       const ownerToken = await createToken({
         sub: 'owner-1',
         tid: 'demo_fnb',
+        mid: 'mem-1',
         roles: ['Chủ'],
         perms: ['system.diagnostics.view'],
       });
@@ -233,6 +271,7 @@ describe('Gateway endpoints (TASK-003)', () => {
       const ownerToken = await createToken({
         sub: 'owner-1',
         tid: 'demo_fnb',
+        mid: 'mem-1',
         roles: ['Chủ'],
         perms: ['system.diagnostics.view', 'system.features.read'],
       });

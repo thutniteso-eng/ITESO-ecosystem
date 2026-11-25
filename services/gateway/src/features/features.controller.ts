@@ -20,11 +20,11 @@ export class FeaturesController {
     tenant: string;
     features: string[];
   }> {
-    const tenantCode = req.tenantCode || req.user?.tid || (req.headers['x-tenant'] as string);
+    const tenantCode = req.tenantCode || req.user?.tid;
     if (!tenantCode) {
       throw new NotFoundException({
         error: 'TENANT_NOT_FOUND',
-        message: 'Missing X-Tenant header or tenant in token',
+        message: 'Missing tenant in authenticated token context',
       });
     }
 
