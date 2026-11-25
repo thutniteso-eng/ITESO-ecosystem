@@ -65,7 +65,9 @@ jobs:
         run: cp .env.example .env
 
       - name: Generate Ed25519 keypair
-        run: ./scripts/generate-keys.sh
+        run: |
+          ./scripts/generate-keys.sh
+          sudo chown -R 1000:1000 infra/secrets
 
       - name: Start PostgreSQL and initialize roles
         run: |
@@ -108,4 +110,6 @@ jobs:
 
       - name: Tear down Compose stack
         if: always()
-        run: docker compose --env-file .env -f infra/docker-compose.yml down -v
+        run: |
+          docker compose --env-file .env -f infra/docker-compose.yml logs || true
+          docker compose --env-file .env -f infra/docker-compose.yml down -v

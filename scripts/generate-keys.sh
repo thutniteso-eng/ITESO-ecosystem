@@ -32,4 +32,15 @@ fi
 chmod 600 "${PRIV_KEY}"
 chmod 600 "${ENC_KEY}"
 chmod 644 "${PUB_KEY}"
+
+# If running on an environment where the current user is not UID 1000 (e.g. CI runner UID 1001),
+# adjust ownership to 1000:1000 so the container user 'node' (UID 1000) can read them with chmod 600
+if [ "$(id -u)" != "1000" ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    sudo chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${PUB_KEY}" 2>/dev/null || true
+  else
+    chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${PUB_KEY}" 2>/dev/null || true
+  fi
+fi
+
 echo "[generate-keys] File permissions verified: private keys chmod 600, public key chmod 644."
