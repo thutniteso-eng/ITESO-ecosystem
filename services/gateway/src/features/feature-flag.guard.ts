@@ -4,7 +4,6 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
-  NotFoundException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { REQUIRE_FEATURE_KEY } from './require-feature.decorator';
@@ -41,16 +40,11 @@ export class FeatureFlagGuard implements CanActivate {
       });
     }
 
-    const tenantCode = req.headers['x-tenant'];
-    if (!tenantCode) {
-      throw new NotFoundException({
-        error: 'TENANT_NOT_FOUND',
-        message: 'Missing X-Tenant header',
-      });
-    }
+    // Read exclusively from req.tenantCode or req.user.tid (set by AuthGuard from token)
+    const tenantCode: string | undefined = req.tenantCode || req.user?.tid;
 
     const isEnabled = await this.platformService.isFeatureEnabled(
-      tenantCode as string,
+      tenantCode,
       featureKey,
     );
 

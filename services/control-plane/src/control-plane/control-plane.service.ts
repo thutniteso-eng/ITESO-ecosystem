@@ -1,14 +1,16 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
   OnModuleDestroy,
 } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from '../db/schema';
 import { NatsService } from '../nats/nats.service';
+import { hashPassword } from '../auth/crypto.util';
 
 @Injectable()
 export class ControlPlaneService implements OnModuleDestroy {
@@ -105,6 +107,7 @@ export class ControlPlaneService implements OnModuleDestroy {
     key: string,
     enabled: boolean,
     note?: string,
+    actor = 'super_admin',
   ): Promise<typeof schema.featureDefinitions.$inferSelect> {
     const feat = await this.db.query.featureDefinitions.findFirst({
       where: eq(schema.featureDefinitions.key, key),
@@ -138,7 +141,7 @@ export class ControlPlaneService implements OnModuleDestroy {
       updatedFeature = updated[0];
 
       await tx.insert(schema.adminAuditLog).values({
-        actor: 'super_admin',
+        actor,
         action: 'UPDATE_PLATFORM_FEATURE',
         targetType: 'feature',
         targetId: key,
@@ -162,6 +165,7 @@ export class ControlPlaneService implements OnModuleDestroy {
     featureKey: string,
     enabled: boolean,
     note?: string,
+    actor = 'super_admin',
   ): Promise<typeof schema.tenantFeatures.$inferSelect> {
     const tenant = await this.db.query.tenants.findFirst({
       where: eq(schema.tenants.code, tenantCode),
@@ -209,7 +213,7 @@ export class ControlPlaneService implements OnModuleDestroy {
           tenantId: tenant.id,
           featureKey,
           enabled,
-          updatedBy: 'super_admin',
+          updatedBy: actor,
           note: note ?? null,
           updatedAt: new Date(),
         })
@@ -217,7 +221,7 @@ export class ControlPlaneService implements OnModuleDestroy {
           target: [schema.tenantFeatures.tenantId, schema.tenantFeatures.featureKey],
           set: {
             enabled,
-            updatedBy: 'super_admin',
+            updatedBy: actor,
             note: note ?? null,
             updatedAt: new Date(),
           },
@@ -227,7 +231,7 @@ export class ControlPlaneService implements OnModuleDestroy {
       saved = result[0];
 
       await tx.insert(schema.adminAuditLog).values({
-        actor: 'super_admin',
+        actor,
         action: 'UPDATE_TENANT_FEATURE',
         targetType: 'tenant_feature',
         targetId: `${tenantCode}:${featureKey}`,
@@ -245,4 +249,254 @@ export class ControlPlaneService implements OnModuleDestroy {
 
     return saved!;
   }
+
+  // --- TASK-003 Admin APIs ---
+
+  async createAccount(
+    data: {
+      email?: string;
+      phone?: string;
+      password: string;
+      isPlatformAdmin?: boolean;
+    },
+    actor: string,
+  ) {
+    if (!data.email && !data.phone) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'At least one of email or phone is required',
+      });
+    }
+
+    if (!data.password || data.password.length < 10) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Password must be at least 10 characters',
+      });
+    }
+
+    const cleanEmail = data.email?.trim().toLowerCase();
+    const cleanPhone = data.phone?.trim();
+
+    const passwordHash = await hashPassword(data.password);
+
+    let createdAccount: typeof schema.accounts.$inferSelect;
+    await this.db.transaction(async (tx) => {
+      const [acc] = await tx
+        .insert(schema.accounts)
+        .values({
+          email: cleanEmail,
+          phone: cleanPhone,
+          passwordHash,
+          isPlatformAdmin: data.isPlatformAdmin ?? false,
+          status: 'active',
+        })
+        .returning();
+
+      createdAccount = acc;
+
+      await tx.insert(schema.adminAuditLog).values({
+        actor,
+        action: 'CREATE_ACCOUNT',
+        targetType: 'account',
+        targetId: acc.id,
+        after: {
+          id: acc.id,
+          email: acc.email,
+          phone: acc.phone,
+          isPlatformAdmin: acc.isPlatformAdmin,
+        },
+      });
+    });
+
+    return {
+      id: createdAccount!.id,
+      email: createdAccount!.email,
+      phone: createdAccount!.phone,
+      isPlatformAdmin: createdAccount!.isPlatformAdmin,
+      status: createdAccount!.status,
+      createdAt: createdAccount!.createdAt,
+    };
+  }
+
+  async createMembership(
+    tenantCode: string,
+    data: { accountId: string; roleNames: string[] },
+    actor: string,
+  ) {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.code, tenantCode),
+    });
+
+    if (!tenant) {
+      throw new NotFoundException({
+        error: 'TENANT_NOT_FOUND',
+        message: `Tenant '${tenantCode}' not found`,
+      });
+    }
+
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, data.accountId),
+    });
+
+    if (!account) {
+      throw new NotFoundException({
+        error: 'ACCOUNT_NOT_FOUND',
+        message: `Account '${data.accountId}' not found`,
+      });
+    }
+
+    if (!Array.isArray(data.roleNames) || data.roleNames.length === 0) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'At least one role name must be specified',
+      });
+    }
+
+    const rolesList = await this.db
+      .select()
+      .from(schema.roles)
+      .where(
+        and(
+          eq(schema.roles.tenantId, tenant.id),
+          inArray(schema.roles.name, data.roleNames),
+        ),
+      );
+
+    if (rolesList.length !== data.roleNames.length) {
+      throw new BadRequestException({
+        error: 'INVALID_ROLES',
+        message: 'One or more specified roles do not exist for this tenant',
+      });
+    }
+
+    let membershipId: string;
+
+    await this.db.transaction(async (tx) => {
+      const [mem] = await tx
+        .insert(schema.memberships)
+        .values({
+          accountId: account.id,
+          tenantId: tenant.id,
+          status: 'active',
+          branchScope: [],
+        })
+        .onConflictDoUpdate({
+          target: [schema.memberships.accountId, schema.memberships.tenantId],
+          set: { status: 'active' },
+        })
+        .returning({ id: schema.memberships.id });
+
+      membershipId = mem.id;
+
+      for (const role of rolesList) {
+        await tx
+          .insert(schema.membershipRoles)
+          .values({
+            membershipId: mem.id,
+            roleId: role.id,
+          })
+          .onConflictDoNothing();
+      }
+
+      await tx.insert(schema.adminAuditLog).values({
+        actor,
+        action: 'CREATE_MEMBERSHIP',
+        targetType: 'membership',
+        targetId: mem.id,
+        after: {
+          accountId: account.id,
+          tenantCode,
+          roles: data.roleNames,
+        },
+      });
+    });
+
+    return {
+      id: membershipId!,
+      accountId: account.id,
+      tenantCode,
+      roles: data.roleNames,
+    };
+  }
+
+  async resetPassword(accountId: string, newPassword: string, actor: string) {
+    if (!newPassword || newPassword.length < 10) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Password must be at least 10 characters',
+      });
+    }
+
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, accountId),
+    });
+
+    if (!account) {
+      throw new NotFoundException({
+        error: 'ACCOUNT_NOT_FOUND',
+        message: `Account '${accountId}' not found`,
+      });
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(schema.accounts)
+        .set({
+          passwordHash,
+          failedAttempts: 0,
+          lockedUntil: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.accounts.id, accountId));
+
+      await tx.insert(schema.adminAuditLog).values({
+        actor,
+        action: 'RESET_PASSWORD',
+        targetType: 'account',
+        targetId: accountId,
+        note: 'Password reset by admin',
+      });
+    });
+
+    return { success: true };
+  }
+
+  async getTenantRoles(tenantCode: string) {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.code, tenantCode),
+    });
+
+    if (!tenant) {
+      throw new NotFoundException({
+        error: 'TENANT_NOT_FOUND',
+        message: `Tenant '${tenantCode}' not found`,
+      });
+    }
+
+    const roleRows = await this.db
+      .select()
+      .from(schema.roles)
+      .where(eq(schema.roles.tenantId, tenant.id));
+
+    const results = [];
+    for (const r of roleRows) {
+      const permRows = await this.db
+        .select({ permissionKey: schema.rolePermissions.permissionKey })
+        .from(schema.rolePermissions)
+        .where(eq(schema.rolePermissions.roleId, r.id));
+
+      results.push({
+        id: r.id,
+        name: r.name,
+        isOwner: r.isOwner,
+        permissions: permRows.map((p) => p.permissionKey),
+      });
+    }
+
+    return results;
+  }
 }
+

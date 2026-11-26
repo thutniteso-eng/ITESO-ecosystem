@@ -4,15 +4,25 @@ import {
   Controller,
   Get,
   Param,
+  Post,
   Put,
+  Req,
   UseGuards,
 } from '@nestjs/common';
-import { AdminAuthGuard } from '../auth/admin-auth.guard';
+import { PlatformAdminGuard } from '../auth/platform-admin.guard';
 import { ControlPlaneService } from './control-plane.service';
 
 interface UpdateFeatureDto {
   enabled: boolean;
   note?: string;
+}
+
+interface RequestWithUser {
+  user?: {
+    id: string;
+    email?: string;
+    isPlatformAdmin?: boolean;
+  };
 }
 
 function validateFeatureBody(body: unknown): UpdateFeatureDto {
@@ -53,7 +63,7 @@ function validateFeatureBody(body: unknown): UpdateFeatureDto {
 }
 
 @Controller('admin')
-@UseGuards(AdminAuthGuard)
+@UseGuards(PlatformAdminGuard)
 export class AdminController {
   constructor(private readonly cpService: ControlPlaneService) {}
 
@@ -76,9 +86,11 @@ export class AdminController {
   async updatePlatformFeature(
     @Param('key') key: string,
     @Body() body: unknown,
+    @Req() req: RequestWithUser,
   ) {
     const validBody = validateFeatureBody(body);
-    return this.cpService.updatePlatformFeature(key, validBody.enabled, validBody.note);
+    const actor = req.user?.id || 'super_admin';
+    return this.cpService.updatePlatformFeature(key, validBody.enabled, validBody.note, actor);
   }
 
   @Put('tenants/:code/features/:key')
@@ -86,8 +98,73 @@ export class AdminController {
     @Param('code') code: string,
     @Param('key') key: string,
     @Body() body: unknown,
+    @Req() req: RequestWithUser,
   ) {
     const validBody = validateFeatureBody(body);
-    return this.cpService.updateTenantFeature(code, key, validBody.enabled, validBody.note);
+    const actor = req.user?.id || 'super_admin';
+    return this.cpService.updateTenantFeature(code, key, validBody.enabled, validBody.note, actor);
+  }
+
+  // --- TASK-003 Admin APIs ---
+
+  @Post('accounts')
+  async createAccount(
+    @Body() body: { email?: string; phone?: string; password?: string; isPlatformAdmin?: boolean },
+    @Req() req: RequestWithUser,
+  ) {
+    const actor = req.user?.id || 'super_admin';
+    if (!body?.password) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Password is required',
+      });
+    }
+    return this.cpService.createAccount(
+      {
+        email: body.email,
+        phone: body.phone,
+        password: body.password,
+        isPlatformAdmin: body.isPlatformAdmin,
+      },
+      actor,
+    );
+  }
+
+  @Post('tenants/:code/memberships')
+  async createMembership(
+    @Param('code') code: string,
+    @Body() body: { accountId?: string; roleNames?: string[] },
+    @Req() req: RequestWithUser,
+  ) {
+    const actor = req.user?.id || 'super_admin';
+    if (!body?.accountId || !body?.roleNames) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'accountId and roleNames are required',
+      });
+    }
+    return this.cpService.createMembership(code, { accountId: body.accountId, roleNames: body.roleNames }, actor);
+  }
+
+  @Put('accounts/:id/password')
+  async resetPassword(
+    @Param('id') id: string,
+    @Body() body: { password?: string },
+    @Req() req: RequestWithUser,
+  ) {
+    const actor = req.user?.id || 'super_admin';
+    if (!body?.password) {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Password is required',
+      });
+    }
+    return this.cpService.resetPassword(id, body.password, actor);
+  }
+
+  @Get('tenants/:code/roles')
+  async getTenantRoles(@Param('code') code: string) {
+    return this.cpService.getTenantRoles(code);
   }
 }
+

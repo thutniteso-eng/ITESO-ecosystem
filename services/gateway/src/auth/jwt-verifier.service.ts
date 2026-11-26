@@ -1,0 +1,72 @@
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as jose from 'jose';
+
+export interface TokenPayload {
+  sub: string;
+  tid?: string;
+  mid?: string;
+  roles?: string[];
+  perms?: string[];
+  amr?: string[];
+  is_platform_admin?: boolean;
+  email?: string;
+  phone?: string;
+  typ?: string;
+}
+
+@Injectable()
+export class JwtVerifierService implements OnModuleInit {
+  private publicKeyObj!: jose.KeyLike | Uint8Array;
+  private readonly expectedKid: string = process.env.JWT_KEY_ID || 'iteso-ed25519-key-1';
+
+  async onModuleInit(): Promise<void> {
+    await this.loadPublicKey();
+  }
+
+  async loadPublicKey(): Promise<void> {
+    const defaultPubPath = path.resolve(__dirname, '../../../../infra/secrets/ed25519_public.pem');
+    const pubPath = process.env.JWT_PUBLIC_KEY_PATH || defaultPubPath;
+
+    if (fs.existsSync(pubPath)) {
+      const pubPem = fs.readFileSync(pubPath, 'utf8');
+      this.publicKeyObj = await jose.importSPKI(pubPem, 'EdDSA');
+    } else if (process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        `FATAL: Ed25519 public key file not found at ${pubPath}.`,
+      );
+    }
+  }
+
+  // Method to allow tests to inject a specific public key
+  setPublicKey(key: jose.KeyLike | Uint8Array): void {
+    this.publicKeyObj = key;
+  }
+
+  async verify(token: string): Promise<TokenPayload> {
+    if (!this.publicKeyObj) {
+      await this.loadPublicKey();
+    }
+
+    if (!this.publicKeyObj) {
+      throw new Error('Public key not loaded');
+    }
+
+    const verified = await jose.jwtVerify(token, this.publicKeyObj, {
+      algorithms: ['EdDSA'],
+      audience: 'iteso-api',
+      issuer: 'iteso-control-plane',
+    });
+
+    if (!verified.protectedHeader.kid || verified.protectedHeader.kid !== this.expectedKid) {
+      throw new Error(`Invalid token kid: ${verified.protectedHeader.kid}`);
+    }
+
+    if (verified.payload.typ !== 'access') {
+      throw new Error(`Invalid token typ: ${verified.payload.typ}, expected 'access'`);
+    }
+
+    return verified.payload as unknown as TokenPayload;
+  }
+}

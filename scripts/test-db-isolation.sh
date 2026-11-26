@@ -78,4 +78,20 @@ if ! echo "$AUDIT_ERR" | grep -qi "permission denied"; then
   exit 1
 fi
 
+echo "[test-db-isolation] Verifying '${GW_USER}' cannot SELECT from 'accounts' in '${PLATFORM_DB}'..."
+set +e
+ACC_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT * FROM accounts LIMIT 1;" 2>&1)"
+ACC_STATUS=$?
+set -e
+
+if [ "$ACC_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading accounts in '${PLATFORM_DB}'!" >&2
+  exit 1
+fi
+if ! echo "$ACC_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' accounts read attempt error does not contain 'permission denied'. Got: ${ACC_ERR}" >&2
+  exit 1
+fi
+
 echo "[test-db-isolation] PASS: All database isolation checks passed cleanly."

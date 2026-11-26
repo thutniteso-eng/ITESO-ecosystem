@@ -120,7 +120,42 @@ export class PlatformService implements OnModuleDestroy {
     return tenant;
   }
 
-  async isFeatureEnabled(tenantCode: string, featureKey: string): Promise<boolean> {
+  async isPlatformFeatureEnabled(featureKey: string): Promise<boolean> {
+    const cacheKey = `platform:${featureKey}`;
+    const now = Date.now();
+    const cached = this.featureCache.get(cacheKey);
+    if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+      return cached.enabled;
+    }
+
+    const query = `
+      SELECT 
+        implementation_status AS "implementationStatus",
+        platform_enabled AS "platformEnabled"
+      FROM feature_definitions
+      WHERE key = $1
+    `;
+    const res = await this.pgPool.query<{
+      implementationStatus: string;
+      platformEnabled: boolean;
+    }>(query, [featureKey]);
+
+    if (res.rows.length === 0) {
+      this.featureCache.set(cacheKey, { enabled: false, timestamp: now });
+      return false;
+    }
+
+    const row = res.rows[0];
+    const enabled = row.implementationStatus === 'available' && row.platformEnabled;
+    this.featureCache.set(cacheKey, { enabled, timestamp: now });
+    return enabled;
+  }
+
+  async isFeatureEnabled(tenantCode: string | undefined, featureKey: string): Promise<boolean> {
+    if (!tenantCode) {
+      return this.isPlatformFeatureEnabled(featureKey);
+    }
+
     const cacheKey = `${tenantCode}:${featureKey}`;
     const now = Date.now();
     const cached = this.featureCache.get(cacheKey);
