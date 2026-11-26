@@ -75,3 +75,10 @@ NestJS + Passport, `argon2` để băm, `jose` để ký và kiểm JWT.
 
 - Control plane là nơi duy nhất **ký** token, vì chỉ nó được ghi dữ liệu tài khoản và refresh token (ADR-006). Gateway **xác minh** access token bằng khóa công khai, không cần truy vấn database ở mỗi request.
 - Ứng dụng vẫn chỉ gọi gateway: gateway chuyển tiếp `/v1/auth/*` sang control plane trong mạng nội bộ.
+
+## Bổ sung khi triển khai (27/11/2026)
+
+- **Tạo người dùng Odoo:** control-plane không tự sinh API key bằng SQL. Module `iteso_base` có model `iteso.provisioning`, chỉ người dùng hệ thống `iteso_system` của từng tenant được gọi. Key của `iteso_system` mã hóa trong `platform` và chỉ control-plane đọc được.
+- **Gateway đọc key của thành viên:** gateway chỉ được đọc bảng `membership_odoo_users`, giải mã bằng khóa riêng `odoo_credentials.key`, khác khóa bảo vệ bí mật TOTP. Gateway bị lộ thì không kéo theo lộ key hệ thống hay bí mật TOTP.
+- **Tắt thành viên có hiệu lực ngay:** control-plane thu hồi key trong Odoo và phát NATS để gateway xóa cache, không đợi access token hết hạn.
+- **Vai trò ánh xạ nhóm Odoo:** mỗi vai trò có danh sách nhóm Odoo (`odoo_groups`). Hiện chỉ cho phép `base.group_user`; khi cài module nghiệp vụ thì mở thêm nhóm của module đó. Không bao giờ cấp `base.group_system` cho người dùng thành viên.
