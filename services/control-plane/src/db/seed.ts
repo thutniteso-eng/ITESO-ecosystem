@@ -267,6 +267,17 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
         roleId,
       })
       .onConflictDoNothing();
+
+    // Seed initial membership_odoo_users row as pending if not exists
+    await db
+      .insert(schema.membershipOdooUsers)
+      .values({
+        membershipId: memRow.id,
+        tenantId,
+        status: 'pending',
+        syncedAt: new Date(),
+      })
+      .onConflictDoNothing();
   }
 
   // 7. Ensure iteso_gateway permissions: only SELECT on tenants, feature_definitions, tenant_features
