@@ -20,6 +20,13 @@ describe('Control Plane Endpoints (TASK-003)', () => {
   let tokenService: TokenService;
   let authService: AuthService;
 
+  const testKeyBase64 = Buffer.alloc(32, 1).toString('base64');
+
+  beforeAll(() => {
+    process.env.PLATFORM_ENCRYPTION_KEY = testKeyBase64;
+    process.env.ODOO_CREDENTIALS_KEY = testKeyBase64;
+  });
+
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
