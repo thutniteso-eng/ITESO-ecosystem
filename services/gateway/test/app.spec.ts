@@ -6,6 +6,7 @@ import * as jose from 'jose';
 import { AppModule } from '../src/app.module';
 import { GatewayNatsListener } from '../src/features/gateway-nats.listener';
 import { OdooCredentialService } from '../src/odoo/odoo-credential.service';
+import { DeviceVerificationService } from '../src/auth/device-verification.service';
 import { PlatformService } from '../src/features/platform.service';
 import { HealthService } from '../src/health/health.service';
 import { OdooService } from '../src/odoo/odoo.service';
@@ -82,6 +83,19 @@ describe('Gateway endpoints (TASK-003)', () => {
         onModuleDestroy: jest.fn(),
         getMemberCredential: jest.fn(),
         evictCache: jest.fn(),
+      })
+      .overrideProvider(DeviceVerificationService)
+      .useValue({
+        onModuleInit: jest.fn(),
+        onModuleDestroy: jest.fn(),
+        verifyDeviceActive: jest.fn().mockResolvedValue({
+          id: 'dev-1',
+          tenantId: '11111111-1111-1111-1111-111111111111',
+          branchId: 'b-1',
+          status: 'active',
+        }),
+        evictCache: jest.fn(),
+        clearCache: jest.fn(),
       })
       .compile();
 

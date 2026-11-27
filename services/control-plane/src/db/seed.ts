@@ -63,6 +63,8 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
     { key: 'system.features', group: 'system', description: 'Tra cứu danh sách tính năng đang bật', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
     // TASK-003 available features
     { key: 'system.auth', group: 'system', description: 'Đăng nhập và phân quyền hệ thống', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
+    // TASK-005 available features
+    { key: 'pos.devices', group: 'pos', description: 'Quản lý máy POS và phiên PIN', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
   ];
 
   for (const feat of features) {
@@ -92,6 +94,10 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
     { key: 'accounting.view', group: 'accounting', description: 'Xem dữ liệu kế toán' },
     // Common permission for every tenant member (needed for GET /v1/features)
     { key: 'system.features.read', group: 'system', description: 'Xem danh sách tính năng được bật của tenant' },
+    // TASK-005 permissions
+    { key: 'pos.device.manage', group: 'pos', description: 'Ghép, xem, thu hồi máy POS' },
+    { key: 'pos.session.open', group: 'pos', description: 'Đăng nhập POS bằng PIN' },
+    { key: 'staff.pin.reset', group: 'pos', description: 'Xóa PIN của nhân viên' },
   ];
 
   for (const p of permissionList) {
@@ -119,9 +125,9 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
   const roleConfigs = [
     { name: 'Chủ', isOwner: true, perms: allPermKeys },
     { name: 'Quản lý', isOwner: false, perms: allPermKeys.filter((k) => k !== 'settings.roles.manage') },
-    { name: 'Thu ngân', isOwner: false, perms: ['pos.order.create', 'pos.discount.apply', 'system.features.read'] },
-    { name: 'Phục vụ', isOwner: false, perms: ['pos.order.create', 'system.features.read'] },
-    { name: 'Bếp', isOwner: false, perms: ['system.features.read'] },
+    { name: 'Thu ngân', isOwner: false, perms: ['pos.order.create', 'pos.discount.apply', 'system.features.read', 'pos.session.open'] },
+    { name: 'Phục vụ', isOwner: false, perms: ['pos.order.create', 'system.features.read', 'pos.session.open'] },
+    { name: 'Bếp', isOwner: false, perms: ['system.features.read', 'pos.session.open'] },
     { name: 'Kế toán', isOwner: false, perms: ['report.revenue.view', 'accounting.view', 'system.features.read'] },
   ];
 
@@ -280,13 +286,36 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
       .onConflictDoNothing();
   }
 
-  // 7. Ensure iteso_gateway permissions: only SELECT on tenants, feature_definitions, tenant_features
+  // 7. Seed branches for demo_fnb and demo_fnb2 (TASK-005)
+  for (const tenantCode of ['demo_fnb', 'demo_fnb2']) {
+    const tenantId = tenantRecords[tenantCode];
+    if (!tenantId) continue;
+    await db
+      .insert(schema.branches)
+      .values({
+        tenantId,
+        code: 'main',
+        name: 'Chi nhánh chính',
+        status: 'active',
+      })
+      .onConflictDoUpdate({
+        target: [schema.branches.tenantId, schema.branches.code],
+        set: {
+          name: 'Chi nhánh chính',
+          status: 'active',
+        },
+      });
+  }
+
+  // 8. Ensure iteso_gateway permissions: only SELECT on tenants, feature_definitions, tenant_features, membership_odoo_users, pos_devices
   await pgPool.query(`
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iteso_gateway') THEN
         GRANT USAGE ON SCHEMA public TO iteso_gateway;
         GRANT SELECT ON TABLE "tenants", "feature_definitions", "tenant_features" TO iteso_gateway;
-        REVOKE ALL ON TABLE "admin_audit_log", "accounts", "permissions", "roles", "role_permissions", "memberships", "membership_roles", "refresh_tokens" FROM iteso_gateway;
+        GRANT SELECT (membership_id, tenant_id, odoo_uid, api_key_enc, key_expires_at, status) ON TABLE "membership_odoo_users" TO iteso_gateway;
+        GRANT SELECT (id, tenant_id, branch_id, status) ON TABLE "pos_devices" TO iteso_gateway;
+        REVOKE ALL ON TABLE "admin_audit_log", "accounts", "permissions", "roles", "role_permissions", "memberships", "membership_roles", "refresh_tokens", "tenant_odoo_system_keys", "branches", "pos_pairing_codes", "membership_pins" FROM iteso_gateway;
       END IF;
     END $$;
   `);

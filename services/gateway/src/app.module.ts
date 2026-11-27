@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { AuthGuard } from './auth/auth.guard';
 import { AuthProxyController } from './auth/auth-proxy.controller';
 import { JwtVerifierService } from './auth/jwt-verifier.service';
+import { DeviceVerificationService } from './auth/device-verification.service';
 import { FeatureFlagGuard } from './features/feature-flag.guard';
 import { FeaturesController } from './features/features.controller';
 import { GatewayNatsListener } from './features/gateway-nats.listener';
@@ -24,6 +25,7 @@ import { OdooCredentialService } from './odoo/odoo-credential.service';
     HealthService,
     OdooService,
     OdooCredentialService,
+    DeviceVerificationService,
     PlatformService,
     GatewayNatsListener,
     JwtVerifierService,

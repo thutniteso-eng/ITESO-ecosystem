@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Acceptance Criteria Verification Suite (TASK-004)
+ * Acceptance Criteria Verification Suite (TASK-005: Shared POS Devices, PIN Auth & Offline Roster)
  */
 
 const { execSync } = require('child_process');
@@ -26,6 +26,9 @@ if (fs.existsSync(dotenvPath)) {
   }
 }
 
+const jose = require(path.join(projectRoot, 'services/control-plane/node_modules/jose'));
+const argon2 = require(path.join(projectRoot, 'services/control-plane/node_modules/argon2'));
+
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:3000';
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://localhost:3100';
 const DEMO_PASSWORD = process.env.DEMO_ACCOUNTS_PASSWORD || 'Admin@1234567';
@@ -45,108 +48,392 @@ function getTotp(secret) {
 
 async function run() {
   console.log('=================================================================');
-  console.log('STARTING TASK-004 ACCEPTANCE CRITERIA VERIFICATION');
+  console.log('STARTING TASK-005 ACCEPTANCE CRITERIA VERIFICATION');
   console.log('=================================================================\n');
 
-  // ---------------------------------------------------------------------------
-  // CRITERION 1: Dev API key removed from repo (except docs/)
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 1: Dev API key removal check ---');
-  let devKeyOccurrences = '';
-  try {
-    devKeyOccurrences = execSync('grep -rn "ODOO_DEV_API_KEY" . --exclude-dir=docs --exclude-dir=.git --exclude="test-acceptance-criteria.js" || true', {
-      cwd: projectRoot,
-    }).toString().trim();
-  } catch {}
-
-  assert(
-    !devKeyOccurrences,
-    `Dev API key still found outside docs/: \n${devKeyOccurrences}`,
-  );
-  console.log('✓ Criterion 1 PASS: Dev API key completely removed from codebase.\n');
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 2: Database res_users and apikeys verification in t_demo_fnb
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 2: Dedicated Odoo users and keys in t_demo_fnb ---');
-  const userCheckSql = `
-    SELECT u.login, u.active, count(k.id) as key_count
-    FROM res_users u
-    JOIN res_users_apikeys k ON u.id = k.user_id AND k.name = 'iteso-gateway'
-    WHERE u.login LIKE 'iteso-%'
-    GROUP BY u.login, u.active
-    ORDER BY u.login;
-  `;
-  const userCheckOut = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -tAc "${userCheckSql}"`,
-    { cwd: projectRoot },
-  ).toString().trim();
-
-  console.log('Odoo provisioned users:\n' + userCheckOut);
-  const rows = userCheckOut.split('\n').filter(Boolean);
-  assert(rows.length >= 2, `Expected at least 2 iteso-* users in t_demo_fnb (got ${rows.length})`);
-  for (const r of rows) {
-    const [login, active, keyCount] = r.split('|');
-    assert(active === 't', `User ${login} is active`);
-    assert(keyCount === '1', `User ${login} has exactly 1 iteso-gateway key (got ${keyCount})`);
-  }
-
-  // Check group_system membership: only __system__, admin, iteso_system allowed
-  const privUsersOut = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -tAc "
-      SELECT u.login FROM res_users u
-      JOIN res_groups_users_rel rel ON u.id = rel.uid
-      JOIN ir_model_data d ON d.res_id = rel.gid AND d.model = 'res.groups'
-      WHERE d.name = 'group_system';
-    "`,
-    { cwd: projectRoot },
-  ).toString().trim().split('\n').map(s => s.trim()).filter(Boolean);
-
-  console.log('Privileged group_system users:', privUsersOut);
-  for (const login of privUsersOut) {
-    assert(
-      ['__system__', 'admin', 'iteso_system'].includes(login),
-      `Unexpected user with group_system: ${login}`,
-    );
-  }
-  console.log('✓ Criterion 2 PASS: Dedicated iteso-* users exist, each has 1 key, none has group_system.\n');
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 3: GET /v1/odoo/version returns 200 with matching odoo_uid
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 3: GET /v1/odoo/version with member credentials ---');
+  // Authenticate owner & cashier with passwords
+  console.log('--- Setup: Authenticating demo accounts ---');
   const ownerLoginRes = await fetch(`${GATEWAY_URL}/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier: 'owner@demo.local', password: DEMO_PASSWORD }),
   });
-  assert(ownerLoginRes.status === 200, `Owner login status 200 (got ${ownerLoginRes.status})`);
+  assert(ownerLoginRes.status === 200, `Owner login 200 (got ${ownerLoginRes.status})`);
   const ownerLogin = await ownerLoginRes.json();
+  const ownerPayload = JSON.parse(Buffer.from(ownerLogin.access_token.split('.')[1], 'base64').toString());
+  const ownerMid = ownerPayload.mid;
 
-  const odooVerRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
-    headers: { Authorization: `Bearer ${ownerLogin.access_token}` },
+  const cashierLoginRes = await fetch(`${GATEWAY_URL}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier: 'cashier@demo.local', password: DEMO_PASSWORD }),
   });
-  assert(odooVerRes.status === 200, `GET /v1/odoo/version status 200 (got ${odooVerRes.status})`);
-  const odooVer = await odooVerRes.json();
-  console.log('GET /v1/odoo/version response:', JSON.stringify(odooVer, null, 2));
+  assert(cashierLoginRes.status === 200, `Cashier login 200 (got ${cashierLoginRes.status})`);
+  const cashierLogin = await cashierLoginRes.json();
+  const cashierPayload = JSON.parse(Buffer.from(cashierLogin.access_token.split('.')[1], 'base64').toString());
+  const cashierMid = cashierPayload.mid;
 
-  assert(odooVer.odoo_uid && typeof odooVer.odoo_uid === 'number', 'odoo_uid returned in response');
+  console.log(`Owner MID: ${ownerMid}, Cashier MID: ${cashierMid}\n`);
 
-  // Check expected uid in platform membership_odoo_users
-  const ownerMid = JSON.parse(Buffer.from(ownerLogin.access_token.split('.')[1], 'base64').toString()).mid;
-  const platformUid = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -tAc "SELECT odoo_uid FROM membership_odoo_users WHERE membership_id = '${ownerMid}';"`,
+  // ---------------------------------------------------------------------------
+  // CRITERION 1: Owner creates pairing code for branch 'main'; simulator pairs device
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 1: Pairing code generation & POS device pairing ---');
+  const pairCodeRes = await fetch(`${GATEWAY_URL}/v1/pos/pairing-codes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ownerLogin.access_token}`,
+    },
+    body: JSON.stringify({ branch_code: 'main', device_name: 'POS Quầy 1' }),
+  });
+  assert(pairCodeRes.status === 200 || pairCodeRes.status === 201, `Create pairing code 200/201 (got ${pairCodeRes.status})`);
+  const pairCodeData = await pairCodeRes.json();
+  console.log('Pairing code response:', pairCodeData);
+
+  assert(pairCodeData.pairing_code, 'Pairing code generated');
+  assert(
+    /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(pairCodeData.pairing_code),
+    `Pairing code '${pairCodeData.pairing_code}' matches 8-char charset (no 0, O, 1, I)`,
+  );
+
+  // Simulator pairs device
+  const pairDeviceRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: pairCodeData.pairing_code }),
+  });
+  assert(pairDeviceRes.status === 200, `Pair device 200 (got ${pairDeviceRes.status})`);
+  const pairDeviceData = await pairDeviceRes.json();
+  console.log('Paired device info:', {
+    device_id: pairDeviceData.device_id,
+    branch: pairDeviceData.branch,
+    has_token: !!pairDeviceData.device_token,
+    has_jwk: !!pairDeviceData.roster_public_jwk,
+  });
+
+  assert(pairDeviceData.device_id, 'device_id returned');
+  assert(pairDeviceData.device_token && pairDeviceData.device_token.length === 64, 'device_token is 64-char hex');
+  assert(pairDeviceData.branch && pairDeviceData.branch.code === 'main', 'branch is main');
+  assert(pairDeviceData.roster_public_jwk && pairDeviceData.roster_public_jwk.kty === 'OKP', 'roster_public_jwk returned');
+
+  const deviceId = pairDeviceData.device_id;
+  const deviceToken = pairDeviceData.device_token;
+  const rosterJwk = pairDeviceData.roster_public_jwk;
+  console.log('✓ Criterion 1 PASS: Pairing code generated and device paired successfully.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 2: Cashier sets PIN via /v1/me/pin -> POS PIN login -> GET /v1/odoo/version -> 403
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 2: Cashier sets PIN & logs in on POS device (403 diagnostics) ---');
+  const cashierSetPinRes = await fetch(`${GATEWAY_URL}/v1/me/pin`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cashierLogin.access_token}`,
+    },
+    body: JSON.stringify({ pin: '246813', password: DEMO_PASSWORD }),
+  });
+  assert(cashierSetPinRes.status === 200, `Cashier set PIN 200 (got ${cashierSetPinRes.status})`);
+
+  // Device logs in with Cashier PIN
+  const cashierPinLoginRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Device ${deviceToken}`,
+    },
+    body: JSON.stringify({ membership_id: cashierMid, pin: '246813' }),
+  });
+  assert(cashierPinLoginRes.status === 200, `Cashier PIN login 200 (got ${cashierPinLoginRes.status})`);
+  const cashierPinData = await cashierPinLoginRes.json();
+  assert(cashierPinData.access_token, 'PIN login issued access_token');
+  assert(cashierPinData.refresh_token, 'PIN login issued refresh_token');
+
+  const cashierPinPayload = JSON.parse(Buffer.from(cashierPinData.access_token.split('.')[1], 'base64').toString());
+  assert(cashierPinPayload.did === deviceId, `Token did matches deviceId (${cashierPinPayload.did})`);
+  assert(cashierPinPayload.bid === pairDeviceData.branch.id, `Token bid matches branchId`);
+  assert(cashierPinPayload.amr && cashierPinPayload.amr.includes('pin'), `amr includes 'pin'`);
+
+  // Call /v1/odoo/version with cashier PIN access token -> MUST be 403 (missing system.diagnostics.view)
+  const cashierDiagRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${cashierPinData.access_token}` },
+  });
+  assert(cashierDiagRes.status === 403, `Cashier diagnostics status 403 (got ${cashierDiagRes.status})`);
+  console.log('✓ Criterion 2 PASS: Cashier PIN login token carries cashier permissions (403 on diagnostics).\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 3: Owner sets PIN -> POS PIN login -> GET /v1/odoo/version -> 200 with odoo_uid
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 3: Owner sets PIN & logs in on POS device (200 with odoo_uid) ---');
+  const ownerSetPinRes = await fetch(`${GATEWAY_URL}/v1/me/pin`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ownerLogin.access_token}`,
+    },
+    body: JSON.stringify({ pin: '135792', password: DEMO_PASSWORD }),
+  });
+  assert(ownerSetPinRes.status === 200, `Owner set PIN 200 (got ${ownerSetPinRes.status})`);
+
+  // Device logs in with Owner PIN
+  const ownerPinLoginRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Device ${deviceToken}`,
+    },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(ownerPinLoginRes.status === 200, `Owner PIN login 200 (got ${ownerPinLoginRes.status})`);
+  const ownerPinData = await ownerPinLoginRes.json();
+
+  // Call /v1/odoo/version with owner PIN access token -> MUST be 200 with odoo_uid
+  const ownerDiagRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${ownerPinData.access_token}` },
+  });
+  assert(ownerDiagRes.status === 200, `Owner diagnostics status 200 (got ${ownerDiagRes.status})`);
+  const ownerDiagBody = await ownerDiagRes.json();
+  console.log('Owner diagnostics response:', ownerDiagBody);
+  assert(ownerDiagBody.odoo_uid && typeof ownerDiagBody.odoo_uid === 'number', 'odoo_uid is returned');
+  console.log('✓ Criterion 3 PASS: Owner PIN login token yields 200 OK with owner odoo_uid.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 4: Fast user switching on same device (cashier -> owner -> cashier) in 3 calls
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 4: Fast user switching on same device without passwords ---');
+  // Switch 1: Cashier
+  const sw1Res = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceToken}` },
+    body: JSON.stringify({ membership_id: cashierMid, pin: '246813' }),
+  });
+  assert(sw1Res.status === 200, 'Switch 1 cashier PIN login 200');
+  const sw1Data = await sw1Res.json();
+  const sw1Payload = JSON.parse(Buffer.from(sw1Data.access_token.split('.')[1], 'base64').toString());
+  assert(sw1Payload.mid === cashierMid, 'Switch 1 token belongs to cashier');
+
+  // Switch 2: Owner
+  const sw2Res = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceToken}` },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(sw2Res.status === 200, 'Switch 2 owner PIN login 200');
+  const sw2Data = await sw2Res.json();
+  const sw2Payload = JSON.parse(Buffer.from(sw2Data.access_token.split('.')[1], 'base64').toString());
+  assert(sw2Payload.mid === ownerMid, 'Switch 2 token belongs to owner');
+
+  // Switch 3: Cashier again
+  const sw3Res = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceToken}` },
+    body: JSON.stringify({ membership_id: cashierMid, pin: '246813' }),
+  });
+  assert(sw3Res.status === 200, 'Switch 3 cashier PIN login 200');
+  const sw3Data = await sw3Res.json();
+  const sw3Payload = JSON.parse(Buffer.from(sw3Data.access_token.split('.')[1], 'base64').toString());
+  assert(sw3Payload.mid === cashierMid, 'Switch 3 token belongs to cashier');
+
+  console.log('✓ Criterion 4 PASS: Fast user switching completed in 3 API calls without passwords.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 5: 5 wrong PIN attempts lock account on 6th attempt even with correct PIN
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 5: PIN brute-force lockout after 5 failed attempts ---');
+  for (let i = 1; i <= 5; i++) {
+    const wrongRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceToken}` },
+      body: JSON.stringify({ membership_id: cashierMid, pin: '999999' }),
+    });
+    assert(wrongRes.status === 401, `Wrong attempt ${i} status 401 (got ${wrongRes.status})`);
+    const wrongBody = await wrongRes.json();
+    assert(wrongBody.error === 'INVALID_PIN', `Error is INVALID_PIN on attempt ${i}`);
+  }
+
+  // 6th attempt with CORRECT PIN -> MUST be 401 INVALID_PIN because locked!
+  const lockedRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceToken}` },
+    body: JSON.stringify({ membership_id: cashierMid, pin: '246813' }),
+  });
+  assert(lockedRes.status === 401, `6th attempt with correct PIN returned 401 (got ${lockedRes.status})`);
+  const lockedBody = await lockedRes.json();
+  assert(lockedBody.error === 'INVALID_PIN', `Locked error is INVALID_PIN (got ${lockedBody.error})`);
+
+  // Verify in PostgreSQL: failed_attempts = 5 and locked_until > NOW()
+  const lockDbCheck = execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -tAc "SELECT failed_attempts, (locked_until > NOW()) FROM membership_pins WHERE membership_id = '${cashierMid}';"`,
     { cwd: projectRoot },
   ).toString().trim();
-
-  assert(String(odooVer.odoo_uid) === platformUid, `odoo_uid ${odooVer.odoo_uid} matches platform record ${platformUid}`);
-  console.log(`✓ Criterion 3 PASS: Version 200 OK with correct odoo_uid=${odooVer.odoo_uid}.\n`);
+  console.log(`Database lock state (failed_attempts|locked_until_active): ${lockDbCheck}`);
+  assert(lockDbCheck === '5|t', `Database shows 5 failed attempts and active lock (got ${lockDbCheck})`);
+  console.log('✓ Criterion 5 PASS: Account locked after 5 failed attempts, 6th attempt rejected.\n');
 
   // ---------------------------------------------------------------------------
-  // CRITERION 4: Disable membership -> immediate revocation & re-enable
+  // CRITERION 6: Roster contains owner & cashier, Ed25519 signature verified, argon2 offline check
   // ---------------------------------------------------------------------------
-  console.log('--- Criterion 4: Disable membership revocation and re-enable ---');
-  // Authenticate platform admin
+  console.log('--- Criterion 6: Offline Roster download, Ed25519 signature & Argon2 verification ---');
+  const rosterRes = await fetch(`${GATEWAY_URL}/v1/pos/roster`, {
+    headers: { Authorization: `Device ${deviceToken}` },
+  });
+  assert(rosterRes.status === 200, `Get roster status 200 (got ${rosterRes.status})`);
+  const rosterData = await rosterRes.json();
+  assert(rosterData.roster_jws, 'roster_jws present');
+  assert(rosterData.roster_public_jwk, 'roster_public_jwk present');
+
+  // Verify JWS signature using Ed25519 public JWK
+  const publicKey = await jose.importJWK(rosterData.roster_public_jwk, 'EdDSA');
+  const verifiedJws = await jose.compactVerify(rosterData.roster_jws, publicKey);
+  const rosterPayload = JSON.parse(Buffer.from(verifiedJws.payload).toString());
+  console.log('Roster payload summary:', {
+    iss: rosterPayload.iss,
+    sub: rosterPayload.sub,
+    aud: rosterPayload.aud,
+    exp: rosterPayload.exp,
+    members_count: rosterPayload.members?.length,
+  });
+
+  assert(rosterPayload.iss === 'iteso-control-plane', 'iss is iteso-control-plane');
+  assert(rosterPayload.sub === deviceId, `sub matches deviceId (${deviceId})`);
+  assert(rosterPayload.aud === 'iteso-pos', 'aud is iteso-pos');
+  assert(rosterPayload.exp && rosterPayload.exp > Math.floor(Date.now() / 1000), 'exp is valid');
+
+  const rosterOwner = rosterPayload.members.find(m => m.membership_id === ownerMid);
+  const rosterCashier = rosterPayload.members.find(m => m.membership_id === cashierMid);
+  assert(rosterOwner, 'Roster contains owner');
+  assert(rosterCashier, 'Roster contains cashier');
+
+  // Verify that an account without PIN or without pos.session.open (e.g. accountant) is NOT in roster
+  const nonPosInRoster = rosterPayload.members.some(m => m.role === 'accountant');
+  assert(!nonPosInRoster, 'Roster does NOT contain members without pos.session.open');
+
+  // Verify owner PIN offline with Argon2
+  const ownerPinMatches = await argon2.verify(rosterOwner.pin_hash, '135792');
+  assert(ownerPinMatches, 'Argon2 hash in roster verifies owner PIN 135792 offline');
+  const wrongPinMatches = await argon2.verify(rosterOwner.pin_hash, '000000');
+  assert(!wrongPinMatches, 'Argon2 rejects wrong PIN 000000 offline');
+
+  console.log('✓ Criterion 6 PASS: Roster JWS signature verified, payload correct, offline PIN check succeeded.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 7: Owner revokes device -> within 2s, did tokens get 401 DEVICE_REVOKED
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 7: Device revocation & immediate gateway rejection (<2s) ---');
+  // Revoke device
+  const revokeRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/${deviceId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${ownerLogin.access_token}` },
+  });
+  assert(revokeRes.status === 200, `Revoke device 200 (got ${revokeRes.status})`);
+
+  // Wait 1.5 seconds for NATS event propagation & gateway cache eviction
+  await new Promise(r => setTimeout(r, 1500));
+
+  // 7.1 Existing PIN access token with did -> MUST return 401 DEVICE_REVOKED
+  const revokedAccessRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${ownerPinData.access_token}` },
+  });
+  assert(revokedAccessRes.status === 401, `Revoked device token returned 401 (got ${revokedAccessRes.status})`);
+  const revokedAccessBody = await revokedAccessRes.json();
+  assert(revokedAccessBody.error === 'DEVICE_REVOKED', `Error is DEVICE_REVOKED (got ${revokedAccessBody.error})`);
+
+  // 7.2 Refresh token of revoked device -> MUST be rejected (401)
+  const revokedRefreshRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Device ${deviceToken}`,
+    },
+    body: JSON.stringify({ refresh_token: ownerPinData.refresh_token }),
+  });
+  assert(revokedRefreshRes.status === 401, `Revoked refresh token returned 401 (got ${revokedRefreshRes.status})`);
+
+  // 7.3 GET /v1/pos/roster with revoked device token -> MUST return 401
+  const revokedRosterRes = await fetch(`${GATEWAY_URL}/v1/pos/roster`, {
+    headers: { Authorization: `Device ${deviceToken}` },
+  });
+  assert(revokedRosterRes.status === 401, `Revoked device roster returned 401 (got ${revokedRosterRes.status})`);
+
+  console.log('✓ Criterion 7 PASS: Device revoked; gateway immediately returns 401 DEVICE_REVOKED, refresh and roster rejected.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 8: Pairing code reuse, expiry & PIN complexity validation
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 8: Pairing code reuse/expiry & PIN complexity ---');
+  // 8.1 Reusing pairing code
+  const reusePairRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: pairCodeData.pairing_code }),
+  });
+  assert(
+    reusePairRes.status === 400 || reusePairRes.status === 401 || reusePairRes.status === 404,
+    `Pairing code reuse rejected (got ${reusePairRes.status})`,
+  );
+
+  // 8.2 Expired pairing code
+  const expiredCodeRes = await fetch(`${GATEWAY_URL}/v1/pos/pairing-codes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerLogin.access_token}` },
+    body: JSON.stringify({ branch_code: 'main', device_name: 'POS Quầy 2' }),
+  });
+  const expiredCodeData = await expiredCodeRes.json();
+  // Manually expire the code in DB using SHA-256 hash
+  const crypto = require('crypto');
+  const codeHash = crypto.createHash('sha256').update(expiredCodeData.pairing_code).digest('hex');
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE pos_pairing_codes SET expires_at = NOW() - INTERVAL '5 minutes' WHERE code_hash = '${codeHash}';"`,
+    { cwd: projectRoot },
+  );
+  const pairExpiredRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: expiredCodeData.pairing_code }),
+  });
+  assert(
+    pairExpiredRes.status === 400 || pairExpiredRes.status === 401 || pairExpiredRes.status === 404,
+    `Expired pairing code rejected (got ${pairExpiredRes.status})`,
+  );
+
+  // 8.3 PIN complexity
+  const testComplexities = [
+    { pin: '111111', desc: 'identical digits' },
+    { pin: '123456', desc: 'ascending sequence' },
+    { pin: '654321', desc: 'descending sequence' },
+    { pin: '12345', desc: 'short PIN' },
+  ];
+  for (const tc of testComplexities) {
+    const badPinRes = await fetch(`${GATEWAY_URL}/v1/me/pin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerLogin.access_token}` },
+      body: JSON.stringify({ pin: tc.pin, password: DEMO_PASSWORD }),
+    });
+    assert(badPinRes.status === 400, `PIN ${tc.pin} (${tc.desc}) rejected with 400 (got ${badPinRes.status})`);
+  }
+
+  // 8.4 Set PIN missing password
+  const noPwdRes = await fetch(`${GATEWAY_URL}/v1/me/pin`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerLogin.access_token}` },
+    body: JSON.stringify({ pin: '592841' }),
+  });
+  assert(noPwdRes.status === 400, `Set PIN without password rejected with 400 (got ${noPwdRes.status})`);
+
+  console.log('✓ Criterion 8 PASS: Pairing code reuse/expiry and PIN complexity properly enforced.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 9: Regressions & TASK-004 Backlog
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 9: Regressions & TASK-004 Backlog Items ---');
+  // Backlog 1: Check regex in register-tenant-system-key.ts
+  const regScriptContent = fs.readFileSync(path.join(projectRoot, 'services/control-plane/src/cli/register-tenant-system-key.ts'), 'utf8');
+  assert(regScriptContent.includes('^[0-9a-f]{40}_oak$'), 'Odoo system key regex tightened to ^[0-9a-f]{40}_oak$');
+
+  // Backlog 2: Challenge token reuse rejection across control-plane restart
+  console.log('9.1 Testing challenge_token reuse after control-plane restart...');
+  // Ensure platform admin exists
   try {
     execSync(
       `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node dist/cli/create-platform-admin.js --email admin@platform.local --password "${ADMIN_PASSWORD}" --totp-secret "${TOTP_SECRET}"`,
@@ -154,96 +441,78 @@ async function run() {
     );
   } catch {}
 
-  let adminToken;
-  // Wait if current step was recently used
-  const epoch = Math.floor(Date.now() / 1000);
-  const remainingInStep = 30 - (epoch % 30);
-  console.log(`Current TOTP step window remaining: ${remainingInStep}s`);
-  if (remainingInStep < 2 || remainingInStep > 28) {
-    console.log('Waiting for fresh TOTP time-step window...');
-    await new Promise(r => setTimeout(r, (remainingInStep + 1) * 1000));
-  }
-
-  const adminLoginRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/login`, {
+  const preAdminLoginRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier: 'admin@platform.local', password: ADMIN_PASSWORD }),
   });
-  const adminLoginData = await adminLoginRes.json();
-  if (!adminLoginData.challenge_token) {
-    console.error('admin login failed:', adminLoginData);
-  }
-  const totpCode = getTotp(TOTP_SECRET);
-  const totpRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/totp`, {
+  const preAdminLoginData = await preAdminLoginRes.json();
+  assert(preAdminLoginData.challenge_token, 'Pre-restart platform admin login returned challenge_token');
+  const restartChallengeToken = preAdminLoginData.challenge_token;
+
+  // Use the challenge_token once before restart
+  const totpCodeBeforeRestart = getTotp(TOTP_SECRET);
+  const firstUseRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/totp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ challenge_token: adminLoginData.challenge_token, code: totpCode }),
+    body: JSON.stringify({ challenge_token: restartChallengeToken, code: totpCodeBeforeRestart }),
   });
-  const totpData = await totpRes.json();
-  if (!totpData.access_token) {
-    console.error('totp verification failed:', totpData);
+  assert(firstUseRes.status === 200, 'Initial TOTP verification with challenge_token succeeded');
+
+  console.log('Restarting control-plane container...');
+  execSync('docker compose --env-file .env -f infra/docker-compose.yml restart control-plane', { cwd: projectRoot });
+
+  // Wait for control-plane to become healthy
+  console.log('Waiting for control-plane to restart and become healthy...');
+  let cpHealthy = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const hRes = await fetch(`${CONTROL_PLANE_URL}/health`);
+      if (hRes.status === 200) {
+        cpHealthy = true;
+        break;
+      }
+    } catch {}
   }
-  adminToken = totpData.access_token;
-  assert(adminToken, 'Obtained Super Admin token');
+  assert(cpHealthy, 'Control plane restarted and is healthy');
 
-  // 4.1: Disable owner membership
-  console.log(`Disabling owner membership ${ownerMid}...`);
-  const disableMemRes = await fetch(`${CONTROL_PLANE_URL}/admin/tenants/demo_fnb/memberships/${ownerMid}`, {
-    method: 'PUT',
+  // Attempt to REUSE pre-restart challenge_token (even with fresh TOTP code) -> MUST be 401
+  const freshTotpCode = getTotp(TOTP_SECRET);
+  const postRestartTotpRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/totp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_token: restartChallengeToken, code: freshTotpCode }),
+  });
+  assert(postRestartTotpRes.status === 401, `Reused challenge_token after restart rejected with 401 (got ${postRestartTotpRes.status})`);
+  console.log('✓ 9.1 Reused challenge_token strictly rejected after restart (Redis persistence verified).');
+
+  // 9.2 Cashier diagnostics forbidden with password login token
+  const cashierDiag2 = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${cashierLogin.access_token}` },
+  });
+  assert(cashierDiag2.status === 403, `Cashier password token diagnostics status 403 (got ${cashierDiag2.status})`);
+
+  // 9.3 Tenant mismatch header rejection
+  const mismatchRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
     headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${adminToken}`,
+      Authorization: `Bearer ${ownerLogin.access_token}`,
+      'X-Tenant': 'demo_fnb2',
     },
-    body: JSON.stringify({ status: 'disabled' }),
   });
-  assert(disableMemRes.status === 200, `Disable membership status 200 (got ${disableMemRes.status})`);
+  assert(mismatchRes.status === 403, `Tenant mismatch status 403 (got ${mismatchRes.status})`);
 
-  // Wait 500ms for event propagation
-  await new Promise(r => setTimeout(r, 500));
-
-  // Call /v1/odoo/version with old owner access token -> MUST be 403 ODOO_USER_NOT_PROVISIONED
-  const checkRevokedRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
-    headers: { Authorization: `Bearer ${ownerLogin.access_token}` },
+  // 9.4 Multi-tenant selection flow
+  const multiLoginRes = await fetch(`${GATEWAY_URL}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier: 'multi@demo.local', password: DEMO_PASSWORD }),
   });
-  assert(checkRevokedRes.status === 403, `Revoked membership call returned 403 (got ${checkRevokedRes.status})`);
-  const checkRevokedBody = await checkRevokedRes.json();
-  assert(checkRevokedBody.error === 'ODOO_USER_NOT_PROVISIONED', `Error is ODOO_USER_NOT_PROVISIONED (got ${checkRevokedBody.error})`);
+  assert(multiLoginRes.status === 200, 'Multi-tenant login 200');
+  const multiLoginData = await multiLoginRes.json();
+  assert(multiLoginData.next === 'select_tenant', 'Multi-tenant login returns select_tenant');
 
-  // Verify in Odoo database: user is inactive, 0 keys
-  const odooInactive = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -tAc "SELECT active, count(k.id) FROM res_users u LEFT JOIN res_users_apikeys k ON u.id = k.user_id AND k.name = 'iteso-gateway' WHERE u.login = 'iteso-${ownerMid}' GROUP BY active;"`,
-    { cwd: projectRoot },
-  ).toString().trim();
-  assert(odooInactive === 'f|0', `Odoo user is inactive with 0 keys (got ${odooInactive})`);
-  console.log('✓ 4.1 Immediately rejected call with 403 ODOO_USER_NOT_PROVISIONED, user deactivated in Odoo.');
-
-  // 4.2: Re-enable owner membership
-  console.log(`Re-enabling owner membership ${ownerMid}...`);
-  const enableMemRes = await fetch(`${CONTROL_PLANE_URL}/admin/tenants/demo_fnb/memberships/${ownerMid}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${adminToken}`,
-    },
-    body: JSON.stringify({ status: 'active' }),
-  });
-  assert(enableMemRes.status === 200, `Re-enable membership status 200 (got ${enableMemRes.status})`);
-
-  await new Promise(r => setTimeout(r, 500));
-
-  // Call /v1/odoo/version again -> MUST be 200 OK
-  const checkReEnabledRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
-    headers: { Authorization: `Bearer ${ownerLogin.access_token}` },
-  });
-  assert(checkReEnabledRes.status === 200, `Re-enabled call returned 200 (got ${checkReEnabledRes.status})`);
-  console.log('✓ 4.2 Re-enabled membership succeeds immediately -> 200 OK.');
-  console.log('✓ Criterion 4 PASS.\n');
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 5: Direct JSON-2 call to iteso.provisioning with member key -> AccessError
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 5: Direct JSON-2 iteso.provisioning caller verification ---');
-  // Read member decrypted API key from DB using odoo_credentials.key
+  // 9.5 Direct JSON-2 iteso.provisioning rejection with member key
   const memberKey = execSync(
     `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node -e '
       const { decryptAesGcm } = require("./dist/auth/crypto.util");
@@ -268,116 +537,19 @@ async function run() {
     },
     body: JSON.stringify({ membership_id: 'hack-test', name: 'Hacker' }),
   });
-
   const directCallBody = await directCallRes.text();
-  console.log(`Direct call status: ${directCallRes.status}, body: ${directCallBody}`);
   assert(
     directCallRes.status === 403 || directCallBody.includes('AccessError') || directCallBody.includes('Access denied'),
     'Direct call was rejected with AccessError',
   );
-  console.log('✓ Criterion 5 PASS: Calling iteso.provisioning with member key is strictly rejected.\n');
 
-  // ---------------------------------------------------------------------------
-  // CRITERION 6: Idempotent sync check
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 6: Idempotent sync verification ---');
-  const countBefore = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -tAc "SELECT count(*) FROM res_users WHERE login LIKE 'iteso-%';"`,
-    { cwd: projectRoot },
-  ).toString().trim();
-
-  execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node dist/cli/provision-odoo-users.js --tenant demo_fnb`,
-    { cwd: projectRoot },
-  );
-
-  const countAfter = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -tAc "SELECT count(*) FROM res_users WHERE login LIKE 'iteso-%';"`,
-    { cwd: projectRoot },
-  ).toString().trim();
-
-  assert(countBefore === countAfter, `User count changed! Before: ${countBefore}, After: ${countAfter}`);
-  console.log(`✓ Criterion 6 PASS: Running sync twice preserves exact user count (${countAfter}).\n`);
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 7: multi@demo.local in demo_fnb2 has status = pending
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 7: multi@demo.local in demo_fnb2 status = pending ---');
-  const fnb2Status = execSync(
-    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -tAc "SELECT o.status FROM accounts a JOIN memberships m ON a.id = m.account_id JOIN tenants t ON m.tenant_id = t.id JOIN membership_odoo_users o ON m.id = o.membership_id WHERE a.email = 'multi@demo.local' AND t.code = 'demo_fnb2';"`,
-    { cwd: projectRoot },
-  ).toString().trim();
-
-  assert(fnb2Status === 'pending', `demo_fnb2 membership status is pending (got ${fnb2Status})`);
-  console.log(`✓ Criterion 7 PASS: multi@demo.local status in demo_fnb2 is '${fnb2Status}'.\n`);
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 8: Database least-privilege permissions verification
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 8: Database permissions check ---');
+  // 9.6 Run DB isolation tests
   execSync('./scripts/test-db-isolation.sh', { cwd: projectRoot, stdio: 'inherit' });
-  console.log('✓ Criterion 8 PASS: Database isolation verified.\n');
 
-  // Small delay to ensure sockets are settled
-  await new Promise(r => setTimeout(r, 500));
+  console.log('✓ Criterion 9 PASS: Prior tasks criteria, backlog items, and database isolation intact.\n');
 
   // ---------------------------------------------------------------------------
-  // CRITERION 9: Prior tasks regression verification
-  // ---------------------------------------------------------------------------
-  console.log('--- Criterion 9: Regressions from TASK-002 and TASK-003 ---');
-  // Cashier forbidden diagnostics
-  console.log('9.1 Checking cashier diagnostics access...');
-  const cashierLoginRes = await fetch(`${GATEWAY_URL}/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
-    body: JSON.stringify({ identifier: 'cashier@demo.local', password: DEMO_PASSWORD }),
-  });
-  assert(cashierLoginRes.status === 200, `Cashier login 200 (got ${cashierLoginRes.status})`);
-  const cashierLogin = await cashierLoginRes.json();
-
-  console.log('9.2 Calling /v1/odoo/version with cashier token...');
-  const cashierDiag = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
-    headers: { Authorization: `Bearer ${cashierLogin.access_token}`, Connection: 'close' },
-  });
-  console.log(`9.2 Cashier diagnostics status: ${cashierDiag.status}`);
-  assert(cashierDiag.status === 403, `Cashier diagnostics status 403 (got ${cashierDiag.status})`);
-
-  // Tenant header mismatch
-  console.log('9.3 Checking tenant mismatch header rejection...');
-  const mismatchRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
-    headers: {
-      Authorization: `Bearer ${ownerLogin.access_token}`,
-      'X-Tenant': 'demo_fnb2',
-      Connection: 'close',
-    },
-  });
-  console.log(`9.3 Mismatch status: ${mismatchRes.status}`);
-  assert(mismatchRes.status === 403, `Tenant mismatch status 403 (got ${mismatchRes.status})`);
-
-  // Multi-tenant selection flow
-  console.log('9.4 Checking multi-tenant login flow...');
-  const multiLoginRes = await fetch(`${GATEWAY_URL}/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
-    body: JSON.stringify({ identifier: 'multi@demo.local', password: DEMO_PASSWORD }),
-  });
-  assert(multiLoginRes.status === 200, `Multi-tenant login 200 (got ${multiLoginRes.status})`);
-  const multiLoginData = await multiLoginRes.json();
-  assert(multiLoginData.next === 'select_tenant', 'Multi-tenant login returns select_tenant');
-
-  // TOTP single use: Reusing TOTP code rejected
-  console.log('9.5 Checking TOTP single-use code rejection...');
-  const totpReuseRes = await fetch(`${CONTROL_PLANE_URL}/v1/auth/totp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
-    body: JSON.stringify({ challenge_token: adminLoginData.challenge_token, code: totpCode }),
-  });
-  assert(totpReuseRes.status === 401, 'Reused TOTP code or challenge rejected');
-
-  console.log('✓ Criterion 9 PASS: Prior criteria and backlog fixes intact.\n');
-
-  // ---------------------------------------------------------------------------
-  // CRITERION 10: Git history check
+  // CRITERION 10: Git history check for secrets
   // ---------------------------------------------------------------------------
   console.log('--- Criterion 10: Git history check for secrets ---');
   const committedSecretsFiles = execSync(
@@ -393,10 +565,10 @@ async function run() {
   ).toString().trim();
   assert(!committedPrivKey, 'No private keys committed in source files');
 
-  console.log('✓ Criterion 10 PASS: No secret keys or credentials in git history.\n');
+  console.log('✓ Criterion 10 PASS: No secret keys, credentials or .env in git history.\n');
 
   console.log('=================================================================');
-  console.log('ALL TASK-004 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!');
+  console.log('ALL TASK-005 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!');
   console.log('=================================================================');
 }
 

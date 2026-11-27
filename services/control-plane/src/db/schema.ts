@@ -27,6 +27,8 @@ export const odooUserStatusEnum = pgEnum('odoo_user_status', [
   'disabled',
   'error',
 ]);
+export const branchStatusEnum = pgEnum('branch_status', ['active', 'disabled']);
+export const posDeviceStatusEnum = pgEnum('pos_device_status', ['active', 'revoked']);
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -195,6 +197,9 @@ export const refreshTokens = pgTable('refresh_tokens', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   userAgent: text('user_agent'),
   ip: text('ip'),
+  deviceId: uuid('device_id').references((): AnyPgColumn => posDevices.id, {
+    onDelete: 'cascade',
+  }),
 });
 
 export const tenantOdooSystemKeys = pgTable('tenant_odoo_system_keys', {
@@ -220,4 +225,65 @@ export const membershipOdooUsers = pgTable('membership_odoo_users', {
   status: odooUserStatusEnum('status').default('pending').notNull(),
   lastError: text('last_error'),
   syncedAt: timestamp('synced_at', { withTimezone: true }),
+});
+
+export const branches = pgTable(
+  'branches',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    status: branchStatusEnum('status').default('active').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique('branches_tenant_id_code_unique').on(t.tenantId, t.code),
+  ],
+);
+
+export const posDevices = pgTable('pos_devices', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  status: posDeviceStatusEnum('status').default('active').notNull(),
+  pairedByMembershipId: uuid('paired_by_membership_id')
+    .references(() => memberships.id, { onDelete: 'set null' }),
+  pairedAt: timestamp('paired_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
+
+export const posPairingCodes = pgTable('pos_pairing_codes', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  branchId: uuid('branch_id')
+    .notNull()
+    .references(() => branches.id, { onDelete: 'cascade' }),
+  deviceName: text('device_name').notNull(),
+  codeHash: text('code_hash').notNull(),
+  createdByMembershipId: uuid('created_by_membership_id')
+    .references(() => memberships.id, { onDelete: 'set null' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+});
+
+export const membershipPins = pgTable('membership_pins', {
+  membershipId: uuid('membership_id')
+    .primaryKey()
+    .references(() => memberships.id, { onDelete: 'cascade' }),
+  pinHash: text('pin_hash').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  failedAttempts: integer('failed_attempts').default(0).notNull(),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
 });
