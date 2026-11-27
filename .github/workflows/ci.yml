@@ -89,7 +89,10 @@ jobs:
             node dist/cli/create-platform-admin.js --email admin@platform.local --password "AdminPassword@123" --totp-secret "JBSWY3DPEHPK3PXP"
 
       - name: Initialize demo tenant t_demo_fnb
-        run: ./scripts/init-demo-tenant.sh
+        run: |
+          ./scripts/init-demo-tenant.sh
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane \
+            node dist/cli/provision-odoo-users.js --tenant demo_fnb
 
       - name: Verify DB isolation and tenant security
         run: ./scripts/test-db-isolation.sh
