@@ -1,6 +1,6 @@
 # ADR-007: Đồng bộ offline (sync engine)
 
-- Trạng thái: Đề xuất (chờ Product Owner duyệt)
+- Trạng thái: Đã duyệt (Product Owner, 27/11/2026)
 - Ngày: 27/11/2026
 - Liên quan: ADR-001, ADR-002, ADR-004, ADR-005, ADR-006
 
