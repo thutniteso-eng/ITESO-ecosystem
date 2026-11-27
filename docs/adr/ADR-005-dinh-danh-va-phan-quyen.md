@@ -82,3 +82,10 @@ NestJS + Passport, `argon2` để băm, `jose` để ký và kiểm JWT.
 - **Gateway đọc key của thành viên:** gateway chỉ được đọc bảng `membership_odoo_users`, giải mã bằng khóa riêng `odoo_credentials.key`, khác khóa bảo vệ bí mật TOTP. Gateway bị lộ thì không kéo theo lộ key hệ thống hay bí mật TOTP.
 - **Tắt thành viên có hiệu lực ngay:** control-plane thu hồi key trong Odoo và phát NATS để gateway xóa cache, không đợi access token hết hạn.
 - **Vai trò ánh xạ nhóm Odoo:** mỗi vai trò có danh sách nhóm Odoo (`odoo_groups`). Hiện chỉ cho phép `base.group_user`; khi cài module nghiệp vụ thì mở thêm nhóm của module đó. Không bao giờ cấp `base.group_system` cho người dùng thành viên.
+
+## Bổ sung khi triển khai (27/11/2026 — TASK-005)
+
+- **Chi nhánh:** thêm bảng `branches` trong `platform`; máy POS thuộc đúng một chi nhánh; `branch_scope` của membership dùng mã chi nhánh.
+- **Device token và PIN:** device token là chuỗi ngẫu nhiên, máy chủ chỉ lưu bản băm. PIN cố định 6 số (không cho 4 số) để tăng độ khó dò, và từ chối PIN dễ đoán.
+- **Phiên PIN:** access token 15 phút mang `did`/`bid`; refresh gắn máy, tối đa 12 giờ. Thu hồi máy thì mọi phiên trên máy mất hiệu lực ngay (gateway kiểm tra `pos_devices`, xóa cache qua NATS).
+- **Roster offline:** ký JWS bằng khóa Ed25519 của control-plane, hết hạn sau 24 giờ. Ai chiếm được máy có thể dò PIN từ roster; chấp nhận vì PIN chỉ mở thao tác POS tại chi nhánh, và máy chủ kiểm tra lại quyền khi đồng bộ.
