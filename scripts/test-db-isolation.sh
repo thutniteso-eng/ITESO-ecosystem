@@ -143,4 +143,68 @@ if ! echo "$RT_ERR" | grep -qi "permission denied"; then
   exit 1
 fi
 
+echo "[test-db-isolation] Verifying '${GW_USER}' can SELECT permitted 4 columns from 'pos_devices' in '${PLATFORM_DB}'..."
+compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT id, tenant_id, branch_id, status FROM pos_devices LIMIT 1;" >/dev/null
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT unpermitted column 'token_hash' on 'pos_devices'..."
+set +e
+POS_DEV_COL_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT token_hash FROM pos_devices LIMIT 1;" 2>&1)"
+POS_DEV_COL_STATUS=$?
+set -e
+if [ "$POS_DEV_COL_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading token_hash from pos_devices!" >&2
+  exit 1
+fi
+if ! echo "$POS_DEV_COL_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' pos_devices column read error does not contain 'permission denied'. Got: ${POS_DEV_COL_ERR}" >&2
+  exit 1
+fi
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT from 'branches' in '${PLATFORM_DB}'..."
+set +e
+BRANCH_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT * FROM branches LIMIT 1;" 2>&1)"
+BRANCH_STATUS=$?
+set -e
+if [ "$BRANCH_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading branches!" >&2
+  exit 1
+fi
+if ! echo "$BRANCH_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' branches read error does not contain 'permission denied'. Got: ${BRANCH_ERR}" >&2
+  exit 1
+fi
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT from 'pos_pairing_codes' in '${PLATFORM_DB}'..."
+set +e
+PAIR_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT * FROM pos_pairing_codes LIMIT 1;" 2>&1)"
+PAIR_STATUS=$?
+set -e
+if [ "$PAIR_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading pos_pairing_codes!" >&2
+  exit 1
+fi
+if ! echo "$PAIR_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' pos_pairing_codes read error does not contain 'permission denied'. Got: ${PAIR_ERR}" >&2
+  exit 1
+fi
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT from 'membership_pins' in '${PLATFORM_DB}'..."
+set +e
+PIN_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT * FROM membership_pins LIMIT 1;" 2>&1)"
+PIN_STATUS=$?
+set -e
+if [ "$PIN_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading membership_pins!" >&2
+  exit 1
+fi
+if ! echo "$PIN_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' membership_pins read error does not contain 'permission denied'. Got: ${PIN_ERR}" >&2
+  exit 1
+fi
+
 echo "[test-db-isolation] PASS: All database isolation checks passed cleanly."

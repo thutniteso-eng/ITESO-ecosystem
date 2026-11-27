@@ -9,6 +9,8 @@ export interface AccessTokenPayload {
   sub: string;
   tid?: string;
   mid?: string;
+  did?: string;
+  bid?: string;
   roles?: string[];
   perms?: string[];
   amr?: string[];
@@ -193,5 +195,24 @@ export class TokenService implements OnModuleInit, OnModuleDestroy {
     }
 
     return verified.payload as unknown as ShortLivedTokenPayload;
+  }
+
+  async signRosterJws(payload: Record<string, unknown>): Promise<string> {
+    const jwt = new jose.SignJWT(payload)
+      .setProtectedHeader({ alg: 'EdDSA', kid: this.kid })
+      .setIssuer('iteso-control-plane')
+      .setAudience('iteso-pos')
+      .setIssuedAt()
+      .setExpirationTime('24h');
+
+    if (payload.did) {
+      jwt.setSubject(String(payload.did));
+    }
+
+    return jwt.sign(this.privateKeyObj);
+  }
+
+  async getPublicJwk(): Promise<jose.JWK> {
+    return jose.exportJWK(this.publicKeyObj);
   }
 }

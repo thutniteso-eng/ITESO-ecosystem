@@ -10,6 +10,8 @@ import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from './public.decorator';
 import { REQUIRE_PERMISSION_KEY } from './require-permission.decorator';
 import { JwtVerifierService } from './jwt-verifier.service';
+import { DeviceVerificationService } from './device-verification.service';
+import { PlatformService } from '../features/platform.service';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -18,6 +20,8 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly jwtVerifier: JwtVerifierService,
+    private readonly deviceVerifier: DeviceVerificationService,
+    private readonly platformService: PlatformService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -88,6 +92,28 @@ export class AuthGuard implements CanActivate {
         error: 'TENANT_MISMATCH',
         message: `X-Tenant header '${headerTenant}' does not match token tenant '${payload.tid}'`,
       });
+    }
+
+    // TASK-005: If token has did (device ID), verify device is still active in pos_devices
+    if (payload.did) {
+      const device = await this.deviceVerifier.verifyDeviceActive(payload.did);
+
+      // TASK-005 Round 2 (Point 5): Verify device belongs to token tenant
+      const tenant = await this.platformService.getActiveTenant(payload.tid);
+      if (device.tenantId !== tenant.id) {
+        throw new ForbiddenException({
+          error: 'TENANT_MISMATCH',
+          message: 'Device does not belong to token tenant',
+        });
+      }
+
+      // If token also has bid (branch ID), verify it matches device's branch
+      if (payload.bid && device.branchId !== payload.bid) {
+        throw new ForbiddenException({
+          error: 'BRANCH_MISMATCH',
+          message: 'Token branch does not match device branch',
+        });
+      }
     }
 
     // Permission check: strictly check permission against payload.perms (no wildcard bypass)

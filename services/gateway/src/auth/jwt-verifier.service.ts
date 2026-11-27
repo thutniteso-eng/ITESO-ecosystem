@@ -7,6 +7,8 @@ export interface TokenPayload {
   sub: string;
   tid?: string;
   mid?: string;
+  did?: string;
+  bid?: string;
   roles?: string[];
   perms?: string[];
   amr?: string[];

@@ -6,19 +6,30 @@ import { TokenService } from './auth/token.service';
 import { AdminController } from './control-plane/admin.controller';
 import { ControlPlaneService } from './control-plane/control-plane.service';
 import { OdooProvisioningService } from './control-plane/odoo-provisioning.service';
+import { PosDeviceController } from './control-plane/pos-device.controller';
+import { PosDeviceService } from './control-plane/pos-device.service';
 import { HealthController } from './health/health.controller';
 import { NatsService } from './nats/nats.service';
 
 @Module({
-  controllers: [AdminController, AuthController, HealthController],
+  controllers: [AdminController, AuthController, PosDeviceController, HealthController],
   providers: [
     AuthService,
     TokenService,
     PlatformAdminGuard,
     ControlPlaneService,
     OdooProvisioningService,
+    PosDeviceService,
     NatsService,
   ],
-  exports: [AuthService, TokenService, PlatformAdminGuard, ControlPlaneService, OdooProvisioningService, NatsService],
+  exports: [
+    AuthService,
+    TokenService,
+    PlatformAdminGuard,
+    ControlPlaneService,
+    OdooProvisioningService,
+    PosDeviceService,
+    NatsService,
+  ],
 })
 export class AppModule {}

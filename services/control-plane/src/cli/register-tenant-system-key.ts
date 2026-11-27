@@ -50,11 +50,10 @@ async function main() {
   }
 
   // In Odoo 20: k = secrets.token_hex(API_KEY_SIZE) + API_KEY_SUFFIX
-  // where API_KEY_SIZE = 20 (40 hex chars) and API_KEY_SUFFIX = '_oak' (44 chars total: ^[a-fA-F0-9]{40}_oak$)
-  // Accept Odoo 20 standard format or 32-64 hex chars with optional _oak suffix
-  const keyRegex = /^[a-fA-F0-9]{32,64}(?:_oak)?$/;
+  // where API_KEY_SIZE = 20 (40 hex chars) and API_KEY_SUFFIX = '_oak' (44 chars total: ^[0-9a-f]{40}_oak$)
+  const keyRegex = /^[0-9a-f]{40}_oak$/;
   if (!keyRegex.test(rawKey)) {
-    console.error('ERROR: Invalid Odoo API key format. Expected 32-64 hex characters (with optional _oak suffix).');
+    console.error('ERROR: Invalid Odoo API key format. Expected ^[0-9a-f]{40}_oak$.');
     process.exit(1);
   }
 

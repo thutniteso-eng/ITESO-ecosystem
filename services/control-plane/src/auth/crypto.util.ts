@@ -113,3 +113,46 @@ export function verifyTotp(token: string, secret: string, window = 1): number | 
   }
   return false;
 }
+
+// Pairing code alphabet excluding easily confused chars (0, O, 1, I)
+const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+export function generatePairingCode(length = 8): string {
+  const bytes = crypto.randomBytes(length);
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += PAIRING_CODE_ALPHABET[bytes[i] % PAIRING_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+export function validatePinComplexity(pin: string, accountPhone?: string | null): { valid: boolean; reason?: string } {
+  if (!/^\d{6}$/.test(pin)) {
+    return { valid: false, reason: 'PIN must be exactly 6 digits.' };
+  }
+
+  // 1. All 6 digits identical: 111111, 222222, etc.
+  if (/^(\d)\1{5}$/.test(pin)) {
+    return { valid: false, reason: 'PIN cannot have all identical digits.' };
+  }
+
+  // 2. Sequential increasing or decreasing digits
+  const sequentialInc = '0123456789';
+  const sequentialDec = '9876543210';
+  if (sequentialInc.includes(pin) || sequentialDec.includes(pin)) {
+    return { valid: false, reason: 'PIN cannot be sequential digits.' };
+  }
+
+  // 3. Last 6 digits of account phone number
+  if (accountPhone) {
+    const digitsOnlyPhone = accountPhone.replace(/\D/g, '');
+    if (digitsOnlyPhone.length >= 6) {
+      const last6Phone = digitsOnlyPhone.slice(-6);
+      if (pin === last6Phone) {
+        return { valid: false, reason: 'PIN cannot match the last 6 digits of phone number.' };
+      }
+    }
+  }
+
+  return { valid: true };
+}

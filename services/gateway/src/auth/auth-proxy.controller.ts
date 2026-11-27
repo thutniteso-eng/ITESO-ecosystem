@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
+  Put,
   Req,
   Res,
 } from '@nestjs/common';
@@ -19,7 +22,8 @@ export class AuthProxyController {
   private readonly controlPlaneUrl: string =
     process.env.CONTROL_PLANE_URL || 'http://control-plane:3100';
 
-  private async forwardPost(
+  private async forwardRequest(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body: unknown,
     headers: Record<string, string | string[] | undefined>,
@@ -31,8 +35,8 @@ export class AuthProxyController {
       const clientIp = req.socket.remoteAddress || '';
       const userAgent = (headers['user-agent'] as string) || '';
 
-      const response = await fetch(`${this.controlPlaneUrl}${path}`, {
-        method: 'POST',
+      const fetchOptions: RequestInit = {
+        method,
         headers: {
           'content-type': 'application/json',
           'x-forwarded-for': clientIp,
@@ -41,8 +45,13 @@ export class AuthProxyController {
             ? { authorization: String(headers['authorization']) }
             : {}),
         },
-        body: JSON.stringify(body ?? {}),
-      });
+      };
+
+      if (method !== 'GET') {
+        fetchOptions.body = JSON.stringify(body ?? {});
+      }
+
+      const response = await fetch(`${this.controlPlaneUrl}${path}`, fetchOptions);
 
       const data = await response.json().catch(() => ({}));
       return res.status(response.status).json(data);
@@ -53,6 +62,16 @@ export class AuthProxyController {
         message: `Error connecting to control plane: ${message}`,
       });
     }
+  }
+
+  private async forwardPost(
+    path: string,
+    body: unknown,
+    headers: Record<string, string | string[] | undefined>,
+    req: Request,
+    res: Response,
+  ) {
+    return this.forwardRequest('POST', path, body, headers, req, res);
   }
 
   @Post('auth/login')
@@ -116,5 +135,77 @@ export class AuthProxyController {
         message: `Error connecting to control plane: ${message}`,
       });
     }
+  }
+
+  // ==========================================
+  // TASK-005 POS Device & PIN endpoints
+  // ==========================================
+
+  @Post('pos/pairing-codes')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @RequirePermission('pos.device.manage')
+  async createPairingCode(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/pairing-codes', body, req.headers, req, res);
+  }
+
+  @Post('pos/devices/pair')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @Public()
+  async pairDevice(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/devices/pair', body, req.headers, req, res);
+  }
+
+  @Get('pos/devices')
+  @RequireFeature('pos.devices')
+  @RequirePermission('pos.device.manage')
+  async listDevices(@Req() req: Request, @Res() res: Response) {
+    return this.forwardRequest('GET', '/v1/pos/devices', null, req.headers, req, res);
+  }
+
+  @Delete('pos/devices/:id')
+  @RequireFeature('pos.devices')
+  @RequirePermission('pos.device.manage')
+  async revokeDevice(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    return this.forwardRequest('DELETE', `/v1/pos/devices/${id}`, null, req.headers, req, res);
+  }
+
+  @Put('me/pin')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @RequirePermission('system.features.read')
+  async setMyPin(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardRequest('PUT', '/v1/me/pin', body, req.headers, req, res);
+  }
+
+  @Delete('staff/:membership_id/pin')
+  @RequireFeature('pos.devices')
+  @RequirePermission('staff.pin.reset')
+  async resetStaffPin(@Param('membership_id') membershipId: string, @Req() req: Request, @Res() res: Response) {
+    return this.forwardRequest('DELETE', `/v1/staff/${membershipId}/pin`, null, req.headers, req, res);
+  }
+
+  @Post('pos/auth/pin')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @Public()
+  async loginWithPin(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/auth/pin', body, req.headers, req, res);
+  }
+
+  @Post('pos/auth/refresh')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @Public()
+  async refreshPinSession(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/auth/refresh', body, req.headers, req, res);
+  }
+
+  @Get('pos/roster')
+  @RequireFeature('pos.devices')
+  @Public()
+  async getRoster(@Req() req: Request, @Res() res: Response) {
+    return this.forwardRequest('GET', '/v1/pos/roster', null, req.headers, req, res);
   }
 }
