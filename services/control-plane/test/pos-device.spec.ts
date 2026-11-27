@@ -3,12 +3,14 @@ import * as schema from '../src/db/schema';
 import { PosDeviceService } from '../src/control-plane/pos-device.service';
 import { TokenService } from '../src/auth/token.service';
 import { NatsService } from '../src/nats/nats.service';
+import { OdooProvisioningService } from '../src/control-plane/odoo-provisioning.service';
 import { validatePinComplexity, verifyPassword } from '../src/auth/crypto.util';
 
-describe('TASK-005: Control Plane PosDeviceService & PIN Unit Tests', () => {
+describe('TASK-005 & TASK-006: Control Plane PosDeviceService & PIN Unit Tests', () => {
   let service: PosDeviceService;
   let tokenService: TokenService;
   let natsService: NatsService;
+  let odooProvisioningService: OdooProvisioningService;
 
   beforeEach(async () => {
     tokenService = {
@@ -22,7 +24,13 @@ describe('TASK-005: Control Plane PosDeviceService & PIN Unit Tests', () => {
       isHealthy: jest.fn().mockResolvedValue(true),
     } as unknown as NatsService;
 
-    service = new PosDeviceService(tokenService, natsService);
+    odooProvisioningService = {
+      provisionDeviceUser: jest.fn().mockResolvedValue({ apiKey: 'mock_api_key', odooUid: 123 }),
+      disableDeviceUser: jest.fn().mockResolvedValue(undefined),
+      getDeviceCredential: jest.fn().mockResolvedValue({ apiKey: 'mock_api_key', odooUid: 123 }),
+    } as unknown as OdooProvisioningService;
+
+    service = new PosDeviceService(tokenService, natsService, odooProvisioningService);
     await service.onModuleInit();
   });
 

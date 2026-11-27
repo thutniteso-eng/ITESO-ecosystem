@@ -1,4 +1,5 @@
 import {
+  bigint,
   boolean,
   check,
   integer,
@@ -10,6 +11,7 @@ import {
   timestamp,
   unique,
   uuid,
+  varchar,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -260,6 +262,9 @@ export const posDevices = pgTable('pos_devices', {
   pairedAt: timestamp('paired_at', { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  odooUid: integer('odoo_uid'),
+  apiKeyEnc: text('api_key_enc'),
+  keyExpiresAt: timestamp('key_expires_at', { withTimezone: true }),
 });
 
 export const posPairingCodes = pgTable('pos_pairing_codes', {
@@ -286,4 +291,31 @@ export const membershipPins = pgTable('membership_pins', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   failedAttempts: integer('failed_attempts').default(0).notNull(),
   lockedUntil: timestamp('locked_until', { withTimezone: true }),
+});
+
+export const posRosterIssues = pgTable('pos_roster_issues', {
+  jti: varchar('jti', { length: 64 }).primaryKey(),
+  deviceId: uuid('device_id')
+    .notNull()
+    .references(() => posDevices.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  memberIds: uuid('member_ids').array().notNull(),
+  issuedAt: timestamp('issued_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+export const deviceNumberBlocks = pgTable('device_number_blocks', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id')
+    .notNull()
+    .references(() => posDevices.id, { onDelete: 'cascade' }),
+  docType: varchar('doc_type', { length: 50 }).notNull(),
+  rangeStart: bigint('range_start', { mode: 'number' }).notNull(),
+  rangeEnd: bigint('range_end', { mode: 'number' }).notNull(),
+  allocatedAt: timestamp('allocated_at', { withTimezone: true }).defaultNow().notNull(),
 });

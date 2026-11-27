@@ -134,4 +134,43 @@ export class PosDeviceController {
   async getRoster(@Headers('authorization') deviceAuthHeader: string | undefined) {
     return this.posDeviceService.getRoster(deviceAuthHeader);
   }
+
+  // TASK-006 Offline Sync Endpoints
+  @Post('pos/auth/device-session')
+  @HttpCode(HttpStatus.OK)
+  async issueDeviceSession(@Headers('authorization') deviceAuthHeader: string | undefined) {
+    return this.posDeviceService.issueDeviceSessionToken(deviceAuthHeader);
+  }
+
+  @Post('pos/number-blocks')
+  @HttpCode(HttpStatus.OK)
+  async allocateNumberBlock(
+    @Headers('authorization') deviceAuthHeader: string | undefined,
+    @Body() body: { doc_type?: string },
+  ) {
+    return this.posDeviceService.allocateNumberBlock(deviceAuthHeader, body?.doc_type);
+  }
+
+  // Internal endpoints called by Gateway
+  @Get('internal/pos/devices/:id/odoo-credential')
+  async getDeviceOdooCredential(
+    @Param('id') deviceId: string,
+    @Headers('x-tenant') tenantCode?: string,
+  ) {
+    if (!tenantCode) {
+      throw new UnauthorizedException({ error: 'MISSING_TENANT', message: 'X-Tenant header required' });
+    }
+    return this.posDeviceService.getDeviceOdooCredential(deviceId, tenantCode);
+  }
+
+  @Get('internal/memberships/:id/permissions')
+  async getMembershipPermissions(
+    @Param('id') membershipId: string,
+    @Headers('x-tenant') tenantCode?: string,
+  ) {
+    if (!tenantCode) {
+      throw new UnauthorizedException({ error: 'MISSING_TENANT', message: 'X-Tenant header required' });
+    }
+    return this.posDeviceService.getMembershipPermissions(membershipId, tenantCode);
+  }
 }

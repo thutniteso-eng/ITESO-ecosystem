@@ -9,6 +9,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from './public.decorator';
 import { REQUIRE_PERMISSION_KEY } from './require-permission.decorator';
+import { REQUIRE_DEVICE_SESSION_KEY } from './require-device-session.decorator';
 import { JwtVerifierService } from './jwt-verifier.service';
 import { DeviceVerificationService } from './device-verification.service';
 import { PlatformService } from '../features/platform.service';
@@ -38,17 +39,22 @@ export class AuthGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
+    const isDeviceSession = this.reflector.getAllAndOverride<boolean | undefined>(
+      REQUIRE_DEVICE_SESSION_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
     const requiredPermission = this.reflector.getAllAndOverride<string | undefined>(
       REQUIRE_PERMISSION_KEY,
       [context.getHandler(), context.getClass()],
     );
 
-    // Rule 5: Every /v1 route MUST declare either @Public() or @RequirePermission('<key>')
-    if (!isPublic && !requiredPermission) {
+    // Rule 5: Every /v1 route MUST declare either @Public(), @RequireDeviceSession(), or @RequirePermission('<key>')
+    if (!isPublic && !isDeviceSession && !requiredPermission) {
       this.logger.error(`Undeclared permission on v1 endpoint: ${req.method} ${path}`);
       throw new ForbiddenException({
         error: 'PERMISSION_UNDECLARED',
-        message: `Endpoint '${path}' does not declare a required permission or @Public()`,
+        message: `Endpoint '${path}' does not declare a required permission, device session, or @Public()`,
       });
     }
 
@@ -77,12 +83,22 @@ export class AuthGuard implements CanActivate {
       });
     }
 
-    // Tenant endpoints require tenant token with both tid and mid
-    if (!payload.tid || !payload.mid) {
-      throw new ForbiddenException({
-        error: 'PLATFORM_TOKEN_NOT_ALLOWED',
-        message: 'Platform tokens without tenant context are not permitted on tenant endpoints',
-      });
+    // TASK-006: Check if route requires Device Session
+    if (isDeviceSession) {
+      if (!payload.tid || !payload.did || !payload.amr?.includes('device')) {
+        throw new ForbiddenException({
+          error: 'DEVICE_SESSION_REQUIRED',
+          message: 'Endpoint requires a valid device session token (amr: ["device"])',
+        });
+      }
+    } else {
+      // Normal tenant endpoints require tenant token with both tid and mid (rejects device-session tokens!)
+      if (!payload.tid || !payload.mid) {
+        throw new ForbiddenException({
+          error: 'PLATFORM_TOKEN_NOT_ALLOWED',
+          message: 'Platform tokens or device tokens without member context are not permitted on tenant endpoints',
+        });
+      }
     }
 
     // Tenant mismatch check

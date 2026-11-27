@@ -207,4 +207,38 @@ if ! echo "$PIN_ERR" | grep -qi "permission denied"; then
   exit 1
 fi
 
+echo "[test-db-isolation] Verifying '${GW_USER}' can SELECT from 'pos_roster_issues' in '${PLATFORM_DB}'..."
+compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT jti, device_id, tenant_id, member_ids, issued_at, expires_at FROM pos_roster_issues LIMIT 1;" >/dev/null
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT unpermitted column 'api_key_enc' on 'pos_devices'..."
+set +e
+POS_DEV_ENC_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT api_key_enc FROM pos_devices LIMIT 1;" 2>&1)"
+POS_DEV_ENC_STATUS=$?
+set -e
+if [ "$POS_DEV_ENC_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading api_key_enc from pos_devices!" >&2
+  exit 1
+fi
+if ! echo "$POS_DEV_ENC_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' pos_devices api_key_enc read error does not contain 'permission denied'. Got: ${POS_DEV_ENC_ERR}" >&2
+  exit 1
+fi
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT from 'device_number_blocks' in '${PLATFORM_DB}'..."
+set +e
+NUM_BLOCK_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT * FROM device_number_blocks LIMIT 1;" 2>&1)"
+NUM_BLOCK_STATUS=$?
+set -e
+if [ "$NUM_BLOCK_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading device_number_blocks!" >&2
+  exit 1
+fi
+if ! echo "$NUM_BLOCK_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' device_number_blocks read error does not contain 'permission denied'. Got: ${NUM_BLOCK_ERR}" >&2
+  exit 1
+fi
+
 echo "[test-db-isolation] PASS: All database isolation checks passed cleanly."

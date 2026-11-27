@@ -13,6 +13,8 @@ import { HealthService } from './health/health.service';
 import { OdooController } from './odoo/odoo.controller';
 import { OdooService } from './odoo/odoo.service';
 import { OdooCredentialService } from './odoo/odoo-credential.service';
+import { SyncController } from './sync/sync.controller';
+import { SyncService } from './sync/sync.service';
 
 @Module({
   controllers: [
@@ -20,6 +22,7 @@ import { OdooCredentialService } from './odoo/odoo-credential.service';
     OdooController,
     FeaturesController,
     AuthProxyController,
+    SyncController,
   ],
   providers: [
     HealthService,
@@ -29,6 +32,7 @@ import { OdooCredentialService } from './odoo/odoo-credential.service';
     PlatformService,
     GatewayNatsListener,
     JwtVerifierService,
+    SyncService,
     {
       provide: APP_GUARD,
       useClass: AuthGuard,

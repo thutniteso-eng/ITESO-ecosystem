@@ -28,16 +28,25 @@ echo "[init-demo-tenant] Checking if database '$TENANT_DB' exists..."
 DB_EXISTS="$(compose exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT 1 FROM pg_database WHERE datname = '${TENANT_DB}'" | tr -d '[:space:]')"
 
 if [ "$DB_EXISTS" != "1" ]; then
-  echo "[init-demo-tenant] Initializing database '$TENANT_DB' with module 'iteso_base'..."
+  echo "[init-demo-tenant] Initializing database '$TENANT_DB' with modules 'iteso_base,iteso_sync'..."
   compose exec -T odoo odoo \
     -c /tmp/odoo.conf \
     -d "$TENANT_DB" \
-    -i iteso_base \
+    -i iteso_base,iteso_sync \
     --stop-after-init \
     --no-http
-  echo "[init-demo-tenant] Database '$TENANT_DB' initialized with 'iteso_base'."
+  echo "[init-demo-tenant] Database '$TENANT_DB' initialized with 'iteso_base,iteso_sync'."
 else
-  echo "[init-demo-tenant] Database '$TENANT_DB' already exists."
+  echo "[init-demo-tenant] Database '$TENANT_DB' already exists. Ensuring 'iteso_sync' is installed..."
+  SYNC_STATE="$(compose exec -T postgres psql -U "$PG_USER" -d "$TENANT_DB" -tAc "SELECT state FROM ir_module_module WHERE name = 'iteso_sync'" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [ "$SYNC_STATE" != "installed" ]; then
+    compose exec -T odoo odoo \
+      -c /tmp/odoo.conf \
+      -d "$TENANT_DB" \
+      -i iteso_sync \
+      --stop-after-init \
+      --no-http
+  fi
 fi
 
 # Secure tenant DB using shared helper script

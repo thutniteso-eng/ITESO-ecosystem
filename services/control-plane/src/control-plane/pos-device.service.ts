@@ -11,6 +11,8 @@ import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import * as argon2 from 'argon2';
+import Redis from 'ioredis';
+import * as crypto from 'crypto';
 import * as schema from '../db/schema';
 import {
   generatePairingCode,
@@ -22,6 +24,7 @@ import {
 } from '../auth/crypto.util';
 import { AccessTokenPayload, TokenService } from '../auth/token.service';
 import { NatsService } from '../nats/nats.service';
+import { OdooProvisioningService } from './odoo-provisioning.service';
 
 export interface PosPairingCodeResult {
   pairing_code: string;
@@ -53,13 +56,15 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
   private readonly db: NodePgDatabase<typeof schema>;
   private readonly pgPool: Pool;
   private dummyPinHash!: string;
+  private redisClient?: Redis;
 
-  // In-memory IP rate limiter for /v1/pos/devices/pair (10 requests / minute / IP)
+  // In-memory fallback IP rate limiter for /v1/pos/devices/pair (10 requests / minute / IP)
   private readonly pairAttempts = new Map<string, { count: number; resetAt: number }>();
 
   constructor(
     private readonly tokenService: TokenService,
     private readonly natsService: NatsService,
+    private readonly odooProvisioningService: OdooProvisioningService,
   ) {
     this.pgPool = new Pool({
       host: process.env.POSTGRES_HOST ?? 'postgres',
@@ -75,6 +80,21 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     // Generate valid dummy argon2id hash to prevent timing attacks (TASK-005 Round 2)
     this.dummyPinHash = await hashPassword('timing-defense-dummy-pin-000000');
+
+    // Attempt Redis connection for distributed IP rate limiting
+    try {
+      const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+      this.redisClient = new Redis(redisUrl, {
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+        connectTimeout: 2000,
+      });
+      this.redisClient.on('error', (_err) => {
+        // Fallback silently to memory Map
+      });
+    } catch {
+      // Fallback to memory Map
+    }
   }
 
   getDummyPinHash(): string {
@@ -82,6 +102,13 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    if (this.redisClient) {
+      try {
+        await this.redisClient.quit();
+      } catch {
+        // Ignore
+      }
+    }
     await this.pgPool.end();
   }
 
@@ -218,20 +245,32 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
   // -------------------------------------------------------------
 
   async pairDevice(pairingCode: string, clientIp?: string): Promise<PosDevicePairResult> {
-    // IP Rate limiting: 10 per minute
+    // IP Rate limiting: 10 per minute (using Redis with in-memory fallback)
     if (clientIp) {
-      const now = Date.now();
-      const ipEntry = this.pairAttempts.get(clientIp);
-      if (ipEntry && ipEntry.resetAt > now) {
-        if (ipEntry.count >= 10) {
-          throw new BadRequestException({
-            error: 'RATE_LIMIT_EXCEEDED',
-            message: 'Too many pairing attempts. Please wait 1 minute.',
-          });
+      let isRateLimited = false;
+      if (this.redisClient && this.redisClient.status === 'ready') {
+        try {
+          const key = `ratelimit:pair:${clientIp}`;
+          const count = await this.redisClient.incr(key);
+          if (count === 1) {
+            await this.redisClient.expire(key, 60);
+          }
+          if (count > 10) {
+            isRateLimited = true;
+          }
+        } catch {
+          // Redis failed, use memory map
+          isRateLimited = this.checkMemoryRateLimit(clientIp);
         }
-        ipEntry.count++;
       } else {
-        this.pairAttempts.set(clientIp, { count: 1, resetAt: now + 60 * 1000 });
+        isRateLimited = this.checkMemoryRateLimit(clientIp);
+      }
+
+      if (isRateLimited) {
+        throw new BadRequestException({
+          error: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many pairing attempts. Please wait 1 minute.',
+        });
       }
     }
 
@@ -313,6 +352,11 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
       })
       .returning();
 
+    // Asynchronously provision device user in Odoo (TASK-006)
+    this.odooProvisioningService.provisionDeviceUser(record.tenantId, device.id, device.name).catch((err) => {
+      console.error(`[PosDeviceService] Failed to provision device user in Odoo:`, err);
+    });
+
     const rosterJwk = (await this.tokenService.getPublicJwk()) as unknown as Record<string, unknown>;
 
     return {
@@ -325,6 +369,21 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
       },
       roster_public_jwk: rosterJwk,
     };
+  }
+
+  private checkMemoryRateLimit(clientIp: string): boolean {
+    const now = Date.now();
+    const ipEntry = this.pairAttempts.get(clientIp);
+    if (ipEntry && ipEntry.resetAt > now) {
+      if (ipEntry.count >= 10) {
+        return true;
+      }
+      ipEntry.count++;
+      return false;
+    } else {
+      this.pairAttempts.set(clientIp, { count: 1, resetAt: now + 60 * 1000 });
+      return false;
+    }
   }
 
   // -------------------------------------------------------------
@@ -407,6 +466,11 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
       .update(schema.refreshTokens)
       .set({ revokedAt: now })
       .where(eq(schema.refreshTokens.deviceId, device.id));
+
+    // Disable device user in Odoo (TASK-006)
+    this.odooProvisioningService.disableDeviceUser(device.tenantId, device.id).catch((err) => {
+      console.error(`[PosDeviceService] Failed to disable device user in Odoo:`, err);
+    });
 
     // 3. Publish NATS event for immediate gateway cache eviction
     await this.natsService.publish('platform.devices.changed', {
@@ -1027,7 +1091,22 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Sign roster as JWS with 24h expiration
+    const rosterJti = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const memberIds = staffList.map((s) => s.membership_id);
+
+    // Save roster issue to pos_roster_issues
+    await this.db.insert(schema.posRosterIssues).values({
+      jti: rosterJti,
+      deviceId: device.id,
+      tenantId: tenant.id,
+      memberIds,
+      issuedAt: new Date(),
+      expiresAt,
+    });
+
     const rosterPayload = {
+      jti: rosterJti,
       tid: tenant.code,
       bid: branch.id,
       did: device.id,
@@ -1050,6 +1129,120 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
       roster_jws: rosterJws,
       roster_public_jwk: publicJwk,
     };
+  }
+
+  // -------------------------------------------------------------
+  // TASK-006: Device Session, Number Blocks, Internal APIs
+  // -------------------------------------------------------------
+
+  async issueDeviceSessionToken(deviceAuthHeader?: string): Promise<{ access_token: string; token_type: string; expires_in: number }> {
+    const { device, tenant, branch } = await this.authenticateDevice(deviceAuthHeader);
+
+    // Check pos.devices feature
+    await this.assertTenantFeatureEnabled(tenant.id, 'pos.devices');
+
+    // Issue JWT with sub: device.id, did: device.id, tid: tenant.code, bid: branch.id, amr: ['device'], perms: []
+    const payload: AccessTokenPayload = {
+      sub: device.id,
+      tid: tenant.code,
+      did: device.id,
+      bid: branch.id,
+      roles: [],
+      perms: [],
+      amr: ['device'],
+    };
+
+    const accessToken = await this.tokenService.signAccessToken(payload);
+
+    // Update last_seen_at
+    await this.db
+      .update(schema.posDevices)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(schema.posDevices.id, device.id));
+
+    return {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: 900,
+    };
+  }
+
+  async allocateNumberBlock(deviceAuthHeader?: string, docType?: string): Promise<{ doc_type: string; range_start: number; range_end: number; allocated_at: string }> {
+    const { device, tenant } = await this.authenticateDevice(deviceAuthHeader);
+
+    if (!docType || docType !== 'order') {
+      throw new BadRequestException({
+        error: 'INVALID_DOC_TYPE',
+        message: "doc_type must be 'order'",
+      });
+    }
+
+    const blockSize = 1000;
+    const now = new Date();
+
+    // Advisory lock per tenant and doc_type
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      const lockKey = `${tenant.id}:number_block:${docType}`;
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey]);
+
+      const maxRes = await client.query(
+        `SELECT COALESCE(MAX(range_end), 0) AS max_end
+         FROM device_number_blocks
+         WHERE tenant_id = $1 AND doc_type = $2`,
+        [tenant.id, docType],
+      );
+
+      const currentMax = Number(maxRes.rows[0].max_end);
+      const rangeStart = currentMax + 1;
+      const rangeEnd = currentMax + blockSize;
+
+      await client.query(
+        `INSERT INTO device_number_blocks (device_id, tenant_id, doc_type, range_start, range_end, allocated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [device.id, tenant.id, docType, rangeStart, rangeEnd, now],
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        doc_type: docType,
+        range_start: rangeStart,
+        range_end: rangeEnd,
+        allocated_at: now.toISOString(),
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getDeviceOdooCredential(deviceId: string, tenantCode: string): Promise<{ apiKey: string; odooUid: number }> {
+    return await this.odooProvisioningService.getDeviceCredential(deviceId, tenantCode);
+  }
+
+  async getMembershipPermissions(membershipId: string, tenantCode: string): Promise<{ roles: string[]; perms: string[] }> {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.code, tenantCode),
+    });
+    if (!tenant) {
+      throw new NotFoundException({ error: 'TENANT_NOT_FOUND', message: 'Tenant not found' });
+    }
+
+    const membership = await this.db.query.memberships.findFirst({
+      where: and(
+        eq(schema.memberships.id, membershipId),
+        eq(schema.memberships.tenantId, tenant.id),
+      ),
+    });
+    if (!membership || membership.status !== 'active') {
+      return { roles: [], perms: [] };
+    }
+
+    return await this.getMembershipRolesAndPerms(membershipId);
   }
 
   // Helper
