@@ -4,6 +4,8 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PlatformService } from '../features/platform.service';
 import { OdooCredentialService } from '../odoo/odoo-credential.service';
 import { OdooService } from '../odoo/odoo.service';
@@ -21,7 +23,7 @@ export interface PushOperation {
 
 export interface OperationResult {
   op_id: string;
-  status: 'applied' | 'rejected' | 'needs_review';
+  status: 'applied' | 'rejected' | 'needs_review' | 'retry';
   result?: Record<string, unknown>;
   error?: string;
 }
@@ -30,6 +32,9 @@ export interface PullDatasetResult {
   reset_required: boolean;
   records: Array<Record<string, unknown>>;
   next_cursor: number;
+  has_more?: boolean;
+  snapshot_after_id?: number;
+  snapshot_until_outbox_id?: number;
 }
 
 interface RosterIssueRow {
@@ -45,6 +50,7 @@ interface RosterIssueRow {
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
   private readonly controlPlaneUrl: string;
+  private readonly internalApiToken: string | null = null;
 
   constructor(
     private readonly platformService: PlatformService,
@@ -52,6 +58,19 @@ export class SyncService {
     private readonly odooService: OdooService,
   ) {
     this.controlPlaneUrl = (process.env.CONTROL_PLANE_URL || 'http://control-plane:3100').replace(/\/+$/, '');
+
+    let iToken: string | null = process.env.INTERNAL_API_TOKEN || null;
+    const iTokenPath =
+      process.env.INTERNAL_API_TOKEN_PATH ||
+      path.resolve(__dirname, '../../../../infra/secrets/internal_api.token');
+    if (!iToken && fs.existsSync(iTokenPath)) {
+      try {
+        iToken = fs.readFileSync(iTokenPath, 'utf8').trim();
+      } catch {
+        iToken = null;
+      }
+    }
+    this.internalApiToken = iToken;
   }
 
   // --------------------------------------------------------------------------
@@ -203,12 +222,21 @@ export class SyncService {
           tenantCode,
           tenant.id,
         );
-      } catch {
-        results[i] = {
-          op_id: op.op_id,
-          status: 'rejected',
-          error: 'MEMBER_DISABLED',
-        };
+      } catch (err: unknown) {
+        if (err instanceof ForbiddenException) {
+          results[i] = {
+            op_id: op.op_id,
+            status: 'rejected',
+            error: 'MEMBER_DISABLED',
+          };
+        } else {
+          this.logger.error(`Database error fetching member credential: ${err}`);
+          results[i] = {
+            op_id: op.op_id,
+            status: 'retry',
+            error: 'INFRASTRUCTURE_ERROR',
+          };
+        }
         continue;
       }
 
@@ -224,10 +252,16 @@ export class SyncService {
       // Check current permissions of membership via Control Plane internal endpoint
       let flagReview = false;
       try {
+        const headers: Record<string, string> = {
+          'X-Tenant': tenantCode,
+        };
+        if (this.internalApiToken) {
+          headers['X-Internal-Token'] = this.internalApiToken;
+        }
         const permRes = await fetch(
           `${this.controlPlaneUrl}/v1/internal/memberships/${op.membership_id}/permissions`,
           {
-            headers: { 'X-Tenant': tenantCode },
+            headers,
             signal: AbortSignal.timeout(3000),
           },
         );
@@ -267,12 +301,13 @@ export class SyncService {
           tenantCode,
           tenant.id,
         );
-      } catch {
+      } catch (err: unknown) {
+        const isMemberDisabled = err instanceof ForbiddenException;
         for (const item of batch) {
           results[item.originalIndex] = {
             op_id: item.op.op_id,
-            status: 'rejected',
-            error: 'MEMBER_DISABLED',
+            status: isMemberDisabled ? 'rejected' : 'retry',
+            error: isMemberDisabled ? 'MEMBER_DISABLED' : 'INFRASTRUCTURE_ERROR',
           };
         }
         continue;
@@ -304,8 +339,8 @@ export class SyncService {
           for (const item of batch) {
             results[item.originalIndex] = {
               op_id: item.op.op_id,
-              status: 'rejected',
-              error: 'ODOO_EXECUTION_ERROR',
+              status: 'retry',
+              error: 'ODOO_TEMPORARY_ERROR',
             };
           }
           continue;
@@ -331,8 +366,8 @@ export class SyncService {
           } else {
             results[item.originalIndex] = {
               op_id: item.op.op_id,
-              status: 'rejected',
-              error: 'NO_RESPONSE_FROM_ODOO',
+              status: 'retry',
+              error: 'ODOO_NO_RESPONSE',
             };
           }
         }
@@ -341,7 +376,7 @@ export class SyncService {
         for (const item of batch) {
           results[item.originalIndex] = {
             op_id: item.op.op_id,
-            status: 'rejected',
+            status: 'retry',
             error: 'ODOO_CALL_FAILED',
           };
         }
@@ -360,6 +395,8 @@ export class SyncService {
     dataset: string,
     cursor: number,
     limit: number,
+    snapshotAfterId = 0,
+    snapshotUntilOutboxId = 0,
   ): Promise<PullDatasetResult> {
     if (!dataset || dataset !== 'contacts') {
       throw new BadRequestException({
@@ -370,23 +407,12 @@ export class SyncService {
 
     const tenant = await this.platformService.getActiveTenant(tenantCode);
 
-    // Call Control-Plane internal API for device read-only Odoo credentials
-    const credRes = await fetch(
-      `${this.controlPlaneUrl}/v1/internal/pos/devices/${deviceId}/odoo-credential`,
-      {
-        headers: { 'X-Tenant': tenantCode },
-        signal: AbortSignal.timeout(3000),
-      },
+    // Read device Odoo credentials locally from device_odoo_users
+    const deviceCred = await this.credentialService.getDeviceCredential(
+      deviceId,
+      tenantCode,
+      tenant.id,
     );
-
-    if (!credRes.ok) {
-      throw new ForbiddenException({
-        error: 'DEVICE_CREDENTIAL_FAILED',
-        message: 'Could not obtain device Odoo credential from control plane',
-      });
-    }
-
-    const deviceCred = (await credRes.json()) as { apiKey: string; odooUid: number };
 
     // Call Odoo iteso.outbox pull
     const response = await this.odooService.executeJson2Call(
@@ -398,6 +424,8 @@ export class SyncService {
         dataset,
         cursor: cursor || 0,
         limit: limit || 500,
+        snapshot_after_id: snapshotAfterId,
+        snapshot_until_outbox_id: snapshotUntilOutboxId,
       },
     );
 

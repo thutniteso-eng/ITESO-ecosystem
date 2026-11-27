@@ -185,3 +185,183 @@ ALL TASK-006 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!
 - `scripts/test-odoo-module.sh`: PASS (15/15 tests).
 - `scripts/test-acceptance-criteria.js`: PASS (10/10 criteria).
 - `scripts/test-acceptance-criteria-task006.js`: PASS (10/10 criteria).
+
+---
+
+## Vòng 2 (Sửa theo review Claude)
+
+Đã hoàn thành toàn bộ 5 điểm trong mục "Bắt buộc sửa (vòng 2)":
+
+### 1. Điểm 1: Bảo mật API nội bộ & Loại bỏ hoàn toàn endpoint trả key Odoo dạng rõ
+- **Xóa endpoint:** Đã xóa bỏ hoàn toàn endpoint `GET /v1/internal/pos/devices/:id/odoo-credential` trên Control Plane.
+- **Bảng `device_odoo_users`:** Tạo bảng `device_odoo_users` lưu trữ `odoo_uid`, `odoo_login`, `api_key_enc` (mã hóa đối xứng AES-256-GCM bằng `odoo_credentials.key`), `key_expires_at`, `status`. Bảng thuộc sở hữu của `iteso_control_plane`, chỉ cấp quyền `SELECT` cho `iteso_gateway`.
+- **Gateway giải mã cục bộ:** `OdooCredentialService` trong Gateway truy vấn trực tiếp bảng `device_odoo_users` và giải mã cục bộ qua `odooCredentialsKey`, lưu cache và lắng nghe NATS event `platform.odoo_credentials.changed` để xóa cache khi thiết bị bị thu hồi hoặc đổi trạng thái.
+- **Xác thực token nội bộ `X-Internal-Token`:**
+  - Script `scripts/generate-keys.sh` sinh bí mật 32 byte hex ngẫu nhiên vào `infra/secrets/internal_api.token` (`chmod 600`).
+  - Docker Compose mount file token và cấu hình `INTERNAL_API_TOKEN_PATH` cho cả `control-plane` và `gateway`.
+  - Tạo `InternalTokenGuard` trên Control-plane bảo vệ toàn bộ các route `/v1/internal/*` (ví dụ `GET /v1/internal/memberships/:id/permissions`), so sánh constant-time bằng `crypto.timingSafeEqual`. Thiếu hoặc sai token trả về HTTP 401.
+
+### 2. Điểm 2: Trạng thái thứ tư `retry` cho lỗi tạm thời & Cập nhật ADR-007
+- **Bổ sung trạng thái `retry`:** Cập nhật ADR-007 mục "Bổ sung khi triển khai (28/11/2026 — Vòng 2 TASK-006)".
+- **Odoo `apply_operations`:**
+  - Chỉ ghi nhận `rejected` vào sổ cái `iteso.sync.operation` đối với các lỗi nghiệp vụ xác định (`INVALID_NAME`, `UNKNOWN_OP_TYPE`).
+  - Mọi exception bất ngờ (lỗi kết nối, serialization failure, vi phạm ràng buộc unique `op_id` do hai request đồng thời) đều tự động rollback savepoint, **tuyệt đối không ghi sổ** và trả về `status: "retry"` kèm mã lỗi ngắn (`TEMPORARY_ERROR`, `CONCURRENT_OP`), không để lộ `str(exc)`.
+- **Gateway `push`:**
+  - Lỗi hạ tầng (Database connection timeout / error, Odoo trả HTTP 5xx, lỗi kết nối mạng tới Odoo) trả về trạng thái `retry` (`INFRASTRUCTURE_ERROR`, `ODOO_TEMPORARY_ERROR`, `ODOO_CALL_FAILED`, `ODOO_NO_RESPONSE`).
+  - Trạng thái `rejected` với mã `MEMBER_DISABLED` chỉ được trả về khi người dùng Odoo của thành viên thực sự ở trạng thái vô hiệu hóa (`ForbiddenException`).
+
+### 3. Điểm 3: Phân trang snapshot khi tải toàn bộ (`cursor = 0`)
+- Cập nhật `iteso.outbox.pull` hỗ trợ phân trang snapshot qua tham số `snapshot_after_id` và `snapshot_until_outbox_id`, trả về cờ `has_more`.
+- `next_cursor` được chốt bằng id outbox lớn nhất tại thời điểm bắt đầu snapshot (`snapshot_until_outbox_id`) và chỉ trả về ở trang cuối cùng (`has_more = false`).
+- Các bản ghi bị sửa đổi trong lúc client đang tải snapshot sẽ tạo dòng outbox mới có ID lớn hơn `snapshot_until_outbox_id`, và được client nhận đầy đủ ngay trong lần gọi pull gia tăng (incremental) đầu tiên sau khi kết thúc snapshot.
+- Viết test Odoo kiểm thử với 1.200 khách hàng (phân trang 3 đợt với `limit=500`), xác nhận nhận đủ 1.200 bản ghi, không trùng, không sót.
+
+### 4. Điểm 4: Bổ sung Unit Tests cho Gateway và Control-plane
+- **Gateway (`services/gateway/test/sync.spec.ts`):** 10 test cases kiểm thử logic thật của `SyncService`:
+  - Từ chối lô thao tác > 200 items (`INVALID_BATCH_SIZE`).
+  - Từ chối thao tác có device khác phiên đăng nhập (`DEVICE_MISMATCH`).
+  - Từ chối thao tác có thành viên ngoài roster (`MEMBER_NOT_IN_ROSTER`).
+  - Từ chối thao tác có roster hết hạn (`ROSTER_EXPIRED`).
+  - Từ chối thao tác có thời gian tương lai > 5 phút (`FUTURE_TIMESTAMP`).
+  - Đánh dấu `needs_review` khi thành viên bị thu hồi quyền `pos.session.open`.
+  - Đánh dấu `needs_review` khi độ lệch thời gian > 10 phút.
+  - Trả về `rejected` (`MEMBER_DISABLED`) khi thành viên bị vô hiệu hóa.
+  - Trả về `retry` (`INFRASTRUCTURE_ERROR`) khi kiểm tra DB bị timeout.
+  - Trả về `retry` (`ODOO_TEMPORARY_ERROR`) khi Odoo trả về 500.
+  - Trả về `retry` (`ODOO_CALL_FAILED`) khi gọi mạng tới Odoo bị ngắt kết nối.
+  - Trả về `retry` (`ODOO_NO_RESPONSE`) khi kết quả Odoo thiếu op.
+  - *(Tổng test suites Gateway: 4 passed, 46/46 tests passed - tăng từ 34 tests)*.
+- **Control-plane (`services/control-plane/test/pos-device.spec.ts`):**
+  - Kiểm thử 10 yêu cầu cấp dải số đồng thời không chồng nhau: 10 blocks x 1.000 số, hoàn toàn liên tục từ 1 đến 10.000 không kẽ hở và không trùng lặp.
+  - Kiểm thử `InternalTokenGuard`: từ chối thiếu token (401), từ chối token sai (401), chấp thuận token hợp lệ (200).
+  - *(Tổng test suites Control-plane: 3 passed, 38/38 tests passed - tăng từ 33 tests)*.
+
+### 5. Điểm 5: Thu hồi quyền `create` trên outbox của `base.group_user`
+- Sửa [odoo-addons/iteso_sync/security/ir.access.csv](file:///home/iteso/projects/ITESO-ecosystem/odoo-addons/iteso_sync/security/ir.access.csv): `access_iteso_outbox_user` chuyển từ `cr` thành `r` (chỉ đọc).
+- Toàn bộ việc ghi nhận outbox được thực hiện qua ORM hook với `iteso.outbox.sudo()`.
+- Thêm test `test_08_member_cannot_create_outbox_directly` trong Odoo test suite, chứng minh thành viên gọi `.create()` trên outbox sẽ bị `AccessError`.
+
+---
+
+## Output thực tế kiểm tra Vòng 2
+
+### 1. Unit Tests Odoo (`./scripts/test-odoo-module.sh`)
+```text
+2026-11-27 23:38:40,211 INFO t_test_iteso_base odoo.addons.iteso_sync.tests.test_sync: Starting TestItesoSync.test_08_member_cannot_create_outbox_directly ...
+2026-11-27 23:38:40,221 INFO t_test_iteso_base odoo.addons.iteso_sync.tests.test_sync: Starting TestItesoSync.test_09_unexpected_exception_returns_retry_without_ledger_record ...
+2026-11-27 23:38:40,235 WARNING t_test_iteso_base odoo.addons.iteso_sync.models.sync_operation: Temporary or unexpected failure processing sync operation: Database serialization failure
+2026-11-27 23:38:40,258 INFO t_test_iteso_base odoo.addons.iteso_sync.tests.test_sync: Starting TestItesoSync.test_10_concurrent_operations_retry_and_applied ...
+2026-11-27 23:38:40,287 WARNING t_test_iteso_base odoo.addons.iteso_sync.models.sync_operation: Temporary or unexpected failure processing sync operation: duplicate key value violates unique constraint
+2026-11-27 23:38:40,291 INFO t_test_iteso_base odoo.addons.iteso_sync.tests.test_sync: Starting TestItesoSync.test_11_snapshot_pagination_1200_contacts ...
+2026-11-27 23:38:41,469 INFO t_test_iteso_base odoo.tests.stats: iteso_base: 8 tests 0.48s 288 queries
+2026-11-27 23:38:41,469 INFO t_test_iteso_base odoo.tests.stats: iteso_sync: 13 tests 1.48s 339 queries
+2026-11-27 23:38:41,469 INFO t_test_iteso_base odoo.tests.stats: web: 6 tests 0.01s 12 queries
+2026-11-27 23:38:41,469 INFO t_test_iteso_base odoo.tests.result: 0 failed, 0 error(s) of 19 tests when loading database 't_test_iteso_base'
+[test-odoo-module] ALL TESTS PASSED for iteso_base and iteso_sync.
+```
+
+### 2. Unit Tests Services
+- **Gateway:**
+```text
+PASS test/device-verification.spec.ts
+PASS test/odoo-credential.spec.ts
+PASS test/sync.spec.ts
+PASS test/app.spec.ts
+Test Suites: 4 passed, 4 total
+Tests:       46 passed, 46 total
+```
+
+- **Control-plane:**
+```text
+PASS test/odoo-provisioning.spec.ts
+PASS test/pos-device.spec.ts
+PASS test/app.spec.ts
+Test Suites: 3 passed, 3 total
+Tests:       38 passed, 38 total
+```
+
+### 3. Kiểm tra DB Isolation (`./scripts/test-db-isolation.sh`)
+```text
+[test-db-isolation] Verifying 'iteso_gateway' can SELECT from 'pos_roster_issues' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' can SELECT from 'device_odoo_users' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT INSERT into 'device_odoo_users' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'device_number_blocks' in 'platform'...
+[test-db-isolation] PASS: All database isolation checks passed cleanly.
+```
+
+### 4. Kiểm tra Tiêu chí nghiệm thu đầu-cuối (`node scripts/test-acceptance-criteria-task006.js`)
+```text
+=================================================================
+STARTING TASK-006 ACCEPTANCE CRITERIA VERIFICATION
+=================================================================
+
+--- Setup: Authenticating demo accounts ---
+Owner MID: 14345ef1-3243-45dc-80b6-f6f9d4a4d38e, Cashier MID: 250eeb60-290d-491b-b049-a5148fa17c96
+
+--- Criterion 1: POS device pairing, roster download & device session token ---
+✓ Criterion 1 PASS: Paired device, downloaded roster with jti, obtained device session token, confirmed mid route rejection.
+
+--- Criterion 2: "Offline" generation of 3 contact.create operations ---
+✓ Criterion 2 PASS: 3 offline operations generated with valid roster_jti and past client_time.
+
+--- Criterion 3: "Online again" push: 3 applied, create_uid is cashier ---
+✓ Criterion 3 PASS: 3 operations pushed and applied. Created records in Odoo have cashier create_uid.
+
+--- Criterion 4: Idempotency of push batch ---
+✓ Criterion 4 PASS: Idempotent push returned identical results without creating duplicates.
+
+--- Criterion 5: Push with invalid roster or member not in roster -> rejected ---
+✓ Criterion 5 PASS: Unauthorized members and foreign/fake rosters strictly rejected.
+
+--- Criterion 6: Revoke permission pos.session.open -> needs_review & customer created ---
+✓ Criterion 6 PASS: Operation executed when member lost permission is marked needs_review and customer is created.
+
+--- Criterion 7: Disabled membership -> rejected with MEMBER_DISABLED ---
+✓ Criterion 7 PASS: Disabled membership rejected with MEMBER_DISABLED.
+
+--- Criterion 8: Outbox pull with cursor=0 and incremental updates ---
+✓ Criterion 8 PASS: Pull snapshot contains created records; incremental pull returns updated contact.
+
+--- Criterion 9: Number block allocation (2 devices x 3 blocks, non-overlapping) ---
+Allocated blocks: [
+  { start: 30001, end: 31000 },
+  { start: 33001, end: 34000 },
+  { start: 31001, end: 32000 },
+  { start: 34001, end: 35000 },
+  { start: 35001, end: 36000 },
+  { start: 32001, end: 33000 }
+]
+✓ Criterion 9 PASS: 6 number blocks allocated concurrently without gaps or overlaps.
+
+--- Criterion 10: Internal API Token authentication & Endpoint security ---
+device_odoo_users row count & encrypted key count: 9 |     9
+✓ Criterion 10 PASS: Internal routes protected with 32-byte token; old cleartext credential endpoint removed; device keys encrypted in device_odoo_users.
+
+--- Criterion 11: Concurrent push batches with same op_id (Retry & Idempotency) ---
+Concurrent Push A result: {
+  op_id: '018e0000-0000-7000-8000-000000000999',
+  status: 'applied',
+  result: { id: 93 },
+  reason: null
+}
+Concurrent Push B result: {
+  op_id: '018e0000-0000-7000-8000-000000000999',
+  status: 'retry',
+  result: null,
+  reason: 'CONCURRENT_OP'
+}
+Retried op result: {
+  op_id: '018e0000-0000-7000-8000-000000000999',
+  status: 'applied',
+  result: { id: 93 },
+  reason: false
+}
+✓ Criterion 11 PASS: Concurrent pushes handled safely with retry/idempotency, exactly 1 contact created.
+
+--- Criterion 12: Git history check for secrets ---
+✓ Criterion 12 PASS: No secret keys, credentials or .env in git history.
+
+=================================================================
+ALL TASK-006 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (12/12)!
+=================================================================
+```

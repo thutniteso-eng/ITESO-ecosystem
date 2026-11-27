@@ -50,6 +50,8 @@ export class SyncController {
     @Query('dataset') dataset: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('snapshot_after_id') snapshotAfterId?: string,
+    @Query('snapshot_until_outbox_id') snapshotUntilOutboxId?: string,
   ) {
     const user = req.user;
     const tenantCode = req.tenantCode || user.tid;
@@ -57,7 +59,17 @@ export class SyncController {
 
     const parsedCursor = cursor ? parseInt(cursor, 10) : 0;
     const parsedLimit = limit ? parseInt(limit, 10) : 500;
+    const parsedSnapshotAfterId = snapshotAfterId ? parseInt(snapshotAfterId, 10) : 0;
+    const parsedSnapshotUntilOutboxId = snapshotUntilOutboxId ? parseInt(snapshotUntilOutboxId, 10) : 0;
 
-    return this.syncService.pull(tenantCode, deviceId, dataset, parsedCursor, parsedLimit);
+    return this.syncService.pull(
+      tenantCode,
+      deviceId,
+      dataset,
+      parsedCursor,
+      parsedLimit,
+      parsedSnapshotAfterId,
+      parsedSnapshotUntilOutboxId,
+    );
   }
 }

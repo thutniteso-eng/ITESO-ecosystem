@@ -211,18 +211,22 @@ echo "[test-db-isolation] Verifying '${GW_USER}' can SELECT from 'pos_roster_iss
 compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
   psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT jti, device_id, tenant_id, member_ids, issued_at, expires_at FROM pos_roster_issues LIMIT 1;" >/dev/null
 
-echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT SELECT unpermitted column 'api_key_enc' on 'pos_devices'..."
+echo "[test-db-isolation] Verifying '${GW_USER}' can SELECT from 'device_odoo_users' in '${PLATFORM_DB}'..."
+compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT device_id, tenant_id, odoo_uid, api_key_enc, key_expires_at, status FROM device_odoo_users LIMIT 1;" >/dev/null
+
+echo "[test-db-isolation] Verifying '${GW_USER}' CANNOT INSERT into 'device_odoo_users' in '${PLATFORM_DB}'..."
 set +e
-POS_DEV_ENC_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
-  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "SELECT api_key_enc FROM pos_devices LIMIT 1;" 2>&1)"
-POS_DEV_ENC_STATUS=$?
+DEV_ODOO_WRITE_ERR="$(compose exec -T -e PGPASSWORD="$GW_PASS" postgres \
+  psql -U "$GW_USER" -d "$PLATFORM_DB" -c "INSERT INTO device_odoo_users(device_id, tenant_id) VALUES (gen_random_uuid(), gen_random_uuid());" 2>&1)"
+DEV_ODOO_WRITE_STATUS=$?
 set -e
-if [ "$POS_DEV_ENC_STATUS" -eq 0 ]; then
-  echo "ERROR: '${GW_USER}' unexpectedly succeeded reading api_key_enc from pos_devices!" >&2
+if [ "$DEV_ODOO_WRITE_STATUS" -eq 0 ]; then
+  echo "ERROR: '${GW_USER}' unexpectedly succeeded inserting into device_odoo_users!" >&2
   exit 1
 fi
-if ! echo "$POS_DEV_ENC_ERR" | grep -qi "permission denied"; then
-  echo "ERROR: '${GW_USER}' pos_devices api_key_enc read error does not contain 'permission denied'. Got: ${POS_DEV_ENC_ERR}" >&2
+if ! echo "$DEV_ODOO_WRITE_ERR" | grep -qi "permission denied"; then
+  echo "ERROR: '${GW_USER}' device_odoo_users write error does not contain 'permission denied'. Got: ${DEV_ODOO_WRITE_ERR}" >&2
   exit 1
 fi
 

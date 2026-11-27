@@ -99,6 +99,8 @@ export class OdooCredentialService implements OnModuleInit, OnModuleDestroy {
           const payload = JSON.parse(sc.decode(m.data));
           if (payload?.membership_id) {
             this.evictCache(payload.membership_id);
+          } else if (payload?.device_id) {
+            this.evictCache(`device:${payload.device_id}`);
           } else {
             this.cache.clear();
           }
@@ -197,6 +199,88 @@ export class OdooCredentialService implements OnModuleInit, OnModuleDestroy {
     };
 
     this.cache.set(membershipId, cred);
+
+    return { apiKey: cred.apiKey, odooUid: cred.odooUid };
+  }
+
+  async getDeviceCredential(
+    deviceId: string,
+    tokenTenantCode: string,
+    expectedTenantId: string,
+  ): Promise<{ apiKey: string; odooUid: number }> {
+    const cacheKey = `device:${deviceId}`;
+    const cached = this.cache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.cachedAt < this.CACHE_TTL_MS) {
+      return { apiKey: cached.apiKey, odooUid: cached.odooUid };
+    }
+
+    const result = await this.pgPool.query(
+      `SELECT device_id, tenant_id, odoo_uid, api_key_enc, key_expires_at, status
+       FROM device_odoo_users
+       WHERE device_id = $1`,
+      [deviceId],
+    );
+
+    if (result.rows.length === 0) {
+      throw new ForbiddenException({
+        error: 'DEVICE_ODOO_USER_NOT_PROVISIONED',
+        message: `Odoo user not provisioned for device ${deviceId}`,
+      });
+    }
+
+    const row = result.rows[0];
+
+    if (row.tenant_id !== expectedTenantId) {
+      this.logger.warn(
+        `TENANT_MISMATCH: device ${deviceId} belongs to tenant ${row.tenant_id}, but token has ${expectedTenantId} (${tokenTenantCode})`,
+      );
+      throw new ForbiddenException({
+        error: 'TENANT_MISMATCH',
+        message: 'Device does not belong to the requested tenant',
+      });
+    }
+
+    if (row.status !== 'active') {
+      throw new ForbiddenException({
+        error: 'DEVICE_ODOO_USER_NOT_PROVISIONED',
+        message: `Device Odoo user status is ${row.status}`,
+      });
+    }
+
+    if (!row.key_expires_at || new Date(row.key_expires_at).getTime() <= now) {
+      throw new ForbiddenException({
+        error: 'DEVICE_ODOO_USER_NOT_PROVISIONED',
+        message: 'Device Odoo user API key has expired',
+      });
+    }
+
+    if (!row.api_key_enc || !row.odoo_uid) {
+      throw new ForbiddenException({
+        error: 'DEVICE_ODOO_USER_NOT_PROVISIONED',
+        message: 'Device Odoo user API key is missing',
+      });
+    }
+
+    let decryptedKey: string;
+    try {
+      decryptedKey = decryptAesGcm(row.api_key_enc, this.odooCredentialsKey);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to decrypt Odoo key for device ${deviceId}: ${errMsg}`);
+      throw new ForbiddenException({
+        error: 'DEVICE_ODOO_USER_NOT_PROVISIONED',
+        message: 'Failed to decrypt device Odoo API key',
+      });
+    }
+
+    const cred: CachedCredential = {
+      apiKey: decryptedKey,
+      odooUid: row.odoo_uid,
+      cachedAt: now,
+    };
+
+    this.cache.set(cacheKey, cred);
 
     return { apiKey: cred.apiKey, odooUid: cred.odooUid };
   }

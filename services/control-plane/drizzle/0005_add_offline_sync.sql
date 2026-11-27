@@ -17,8 +17,21 @@ CREATE TABLE IF NOT EXISTS "device_number_blocks" (
 	"allocated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 
-ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "odoo_uid" integer;
-ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "api_key_enc" text;
-ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "key_expires_at" timestamp with time zone;
+CREATE TABLE IF NOT EXISTS "device_odoo_users" (
+	"device_id" uuid PRIMARY KEY NOT NULL REFERENCES "pos_devices"("id") ON DELETE CASCADE,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"odoo_uid" integer,
+	"odoo_login" text,
+	"api_key_enc" text,
+	"key_expires_at" timestamp with time zone,
+	"status" "odoo_user_status" DEFAULT 'pending' NOT NULL,
+	"last_error" text,
+	"synced_at" timestamp with time zone
+);
+
+ALTER TABLE "pos_devices" DROP COLUMN IF EXISTS "odoo_uid";
+ALTER TABLE "pos_devices" DROP COLUMN IF EXISTS "api_key_enc";
+ALTER TABLE "pos_devices" DROP COLUMN IF EXISTS "key_expires_at";
 
 GRANT SELECT ON TABLE "pos_roster_issues" TO iteso_gateway;
+GRANT SELECT ON TABLE "device_odoo_users" TO iteso_gateway;

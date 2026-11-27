@@ -352,8 +352,8 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
       })
       .returning();
 
-    // Asynchronously provision device user in Odoo (TASK-006)
-    this.odooProvisioningService.provisionDeviceUser(record.tenantId, device.id, device.name).catch((err) => {
+    // Provision device user in Odoo (TASK-006)
+    await this.odooProvisioningService.provisionDeviceUser(record.tenantId, device.id, device.name).catch((err) => {
       console.error(`[PosDeviceService] Failed to provision device user in Odoo:`, err);
     });
 
@@ -1218,10 +1218,6 @@ export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
     } finally {
       client.release();
     }
-  }
-
-  async getDeviceOdooCredential(deviceId: string, tenantCode: string): Promise<{ apiKey: string; odooUid: number }> {
-    return await this.odooProvisioningService.getDeviceCredential(deviceId, tenantCode);
   }
 
   async getMembershipPermissions(membershipId: string, tenantCode: string): Promise<{ roles: string[]; perms: string[] }> {

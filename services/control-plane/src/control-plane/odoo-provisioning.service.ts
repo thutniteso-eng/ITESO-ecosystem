@@ -499,24 +499,45 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
     const apiKeyEnc = encryptAesGcm(rawKey, this.odooCredentialsKey);
 
     await this.db
-      .update(schema.posDevices)
-      .set({
+      .insert(schema.deviceOdooUsers)
+      .values({
+        deviceId,
+        tenantId,
         odooUid: uid,
+        odooLogin: membershipId,
         apiKeyEnc,
         keyExpiresAt,
+        status: 'active',
+        lastError: null,
+        syncedAt: new Date(),
       })
-      .where(eq(schema.posDevices.id, deviceId));
+      .onConflictDoUpdate({
+        target: schema.deviceOdooUsers.deviceId,
+        set: {
+          odooUid: uid,
+          odooLogin: membershipId,
+          apiKeyEnc,
+          keyExpiresAt,
+          status: 'active',
+          lastError: null,
+          syncedAt: new Date(),
+        },
+      });
+
+    await this.natsService.publish('platform.odoo_credentials.changed', {
+      device_id: deviceId,
+    });
 
     return { odooUid: uid, apiKey: rawKey };
   }
 
   async disableDeviceUser(tenantId: string, deviceId: string): Promise<void> {
-    const device = await this.db.query.posDevices.findFirst({
-      where: eq(schema.posDevices.id, deviceId),
+    const deviceOdoo = await this.db.query.deviceOdooUsers.findFirst({
+      where: eq(schema.deviceOdooUsers.deviceId, deviceId),
     });
-    if (!device) return;
+    if (!deviceOdoo) return;
 
-    if (device.odooUid) {
+    if (deviceOdoo.odooUid) {
       const tenant = await this.db.query.tenants.findFirst({
         where: eq(schema.tenants.id, tenantId),
       });
@@ -532,7 +553,7 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
               systemKey,
               'iteso.provisioning',
               'disable_member',
-              { uid: device.odooUid },
+              { uid: deviceOdoo.odooUid },
             );
           } catch (e) {
             console.warn(`[OdooProvisioningService] Error disabling Odoo user for device ${deviceId}:`, e);
@@ -542,45 +563,17 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.db
-      .update(schema.posDevices)
+      .update(schema.deviceOdooUsers)
       .set({
         apiKeyEnc: null,
+        status: 'disabled',
+        syncedAt: new Date(),
       })
-      .where(eq(schema.posDevices.id, deviceId));
-  }
+      .where(eq(schema.deviceOdooUsers.deviceId, deviceId));
 
-  async getDeviceCredential(
-    deviceId: string,
-    tenantCode: string,
-  ): Promise<{ apiKey: string; odooUid: number }> {
-    const tenant = await this.db.query.tenants.findFirst({
-      where: eq(schema.tenants.code, tenantCode),
+    await this.natsService.publish('platform.odoo_credentials.changed', {
+      device_id: deviceId,
     });
-    if (!tenant) {
-      throw new Error(`Tenant '${tenantCode}' not found`);
-    }
-
-    const device = await this.db.query.posDevices.findFirst({
-      where: and(
-        eq(schema.posDevices.id, deviceId),
-        eq(schema.posDevices.tenantId, tenant.id),
-      ),
-    });
-    if (!device) {
-      throw new Error(`Device '${deviceId}' not found for tenant '${tenantCode}'`);
-    }
-
-    if (device.status !== 'active') {
-      throw new Error(`Device '${deviceId}' is ${device.status}`);
-    }
-
-    const now = new Date();
-    if (device.apiKeyEnc && device.odooUid && device.keyExpiresAt && device.keyExpiresAt > now) {
-      const apiKey = decryptAesGcm(device.apiKeyEnc, this.odooCredentialsKey);
-      return { apiKey, odooUid: device.odooUid };
-    }
-
-    return await this.provisionDeviceUser(tenant.id, device.id, device.name);
   }
 
   private async saveRecordStatus(

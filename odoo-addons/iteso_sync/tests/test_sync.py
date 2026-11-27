@@ -224,3 +224,131 @@ class TestItesoSync(TransactionCase):
         # Attempt to delete ledger row as member_user
         with self.assertRaises(AccessError):
             op_record.with_user(self.member_user).unlink()
+
+    def test_08_member_cannot_create_outbox_directly(self):
+        """Member user (base.group_user) cannot directly insert fake iteso.outbox records (AccessError)."""
+        with self.assertRaises(AccessError):
+            self.env["iteso.outbox"].with_user(self.member_user).create({
+                "model": "res.partner",
+                "res_id": 9999,
+                "action": "create",
+            })
+
+    def test_09_unexpected_exception_returns_retry_without_ledger_record(self):
+        """Unexpected exception returns status 'retry', no rejected row recorded in ledger."""
+        from unittest.mock import patch
+        op_id = "018e0000-0000-7000-8000-000000000008"
+        op = {
+            "op_id": op_id,
+            "device_id": "dev-01",
+            "membership_id": "mem-01",
+            "op_type": "contact.create",
+            "seq": 1,
+            "client_time": "2026-11-27 10:06:00",
+            "payload": {"name": "Khách Lỗi Tạm Thời"},
+        }
+        # Simulate unexpected DB error during partner create
+        with patch.object(type(self.env["res.partner"]), "create", side_effect=Exception("Database serialization failure")):
+            res = self.env["iteso.sync.operation"].with_user(self.member_user).apply_operations([op])
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["status"], "retry")
+            self.assertEqual(res[0]["reason"], "TEMPORARY_ERROR")
+
+        # Verify no ledger row was created (did not become permanently rejected)
+        ledger_row = self.env["iteso.sync.operation"].search([("op_id", "=", op_id)])
+        self.assertFalse(ledger_row)
+
+        # Retry now succeeds cleanly
+        res_retry = self.env["iteso.sync.operation"].with_user(self.member_user).apply_operations([op])
+        self.assertEqual(res_retry[0]["status"], "applied")
+        self.assertTrue(res_retry[0]["result"]["id"])
+
+    def test_10_concurrent_operations_retry_and_applied(self):
+        """Simultaneous batches with same op_id: one succeeds, one gets retry, retrying gets applied."""
+        from unittest.mock import patch
+        op_id = "018e0000-0000-7000-8000-000000000009"
+        op = {
+            "op_id": op_id,
+            "device_id": "dev-01",
+            "membership_id": "mem-01",
+            "op_type": "contact.create",
+            "seq": 1,
+            "client_time": "2026-11-27 10:07:00",
+            "payload": {"name": "Khách Hàng Đồng Thời"},
+        }
+
+        # First execution succeeds
+        res1 = self.env["iteso.sync.operation"].with_user(self.member_user).apply_operations([op])
+        self.assertEqual(res1[0]["status"], "applied")
+        contact_id = res1[0]["result"]["id"]
+
+        # Simulate unique constraint violation as if hit concurrently before commit
+        with patch.object(type(self.env["iteso.sync.operation"]), "search", return_value=self.env["iteso.sync.operation"]):
+            with patch.object(type(self.env["iteso.sync.operation"]), "create", side_effect=Exception("duplicate key value violates unique constraint")):
+                res_concurrent = self.env["iteso.sync.operation"].with_user(self.member_user).apply_operations([op])
+                self.assertEqual(res_concurrent[0]["status"], "retry")
+                self.assertEqual(res_concurrent[0]["reason"], "CONCURRENT_OP")
+
+        # After retry (seeing committed row): returns applied with same contact_id
+        res_retry = self.env["iteso.sync.operation"].with_user(self.member_user).apply_operations([op])
+        self.assertEqual(res_retry[0]["status"], "applied")
+        self.assertEqual(res_retry[0]["result"]["id"], contact_id)
+
+        # Ensure only 1 contact was ever created
+        matching = self.env["res.partner"].search([("name", "=", "Khách Hàng Đồng Thời")])
+        self.assertEqual(len(matching), 1)
+
+    def test_11_snapshot_pagination_1200_contacts(self):
+        """Pull snapshot with 1,200 contacts across 3 pages with limit=500: receives all 1,200 without duplicate or omission."""
+        # Batch create 1200 contacts
+        partner_vals = [{"name": f"Contact Batch {i:04d}"} for i in range(1200)]
+        self.env["res.partner"].create(partner_vals)
+
+        # Page 1
+        page1 = self.env["iteso.outbox"].with_user(self.member_user).pull("contacts", cursor=0, limit=500)
+        self.assertTrue(page1["has_more"])
+        self.assertEqual(page1["next_cursor"], 0)
+        self.assertEqual(len(page1["records"]), 500)
+        pinned_outbox = page1["snapshot_until_outbox_id"]
+        last_id_p1 = page1["snapshot_after_id"]
+
+        # Modify first contact in page 1 during snapshot download
+        p_first = self.env["res.partner"].browse(page1["records"][0]["id"])
+        p_first.write({"phone": "0999111222"})
+
+        # Page 2
+        page2 = self.env["iteso.outbox"].with_user(self.member_user).pull(
+            "contacts",
+            cursor=0,
+            limit=500,
+            snapshot_after_id=last_id_p1,
+            snapshot_until_outbox_id=pinned_outbox,
+        )
+        self.assertTrue(page2["has_more"])
+        self.assertEqual(page2["next_cursor"], 0)
+        self.assertEqual(len(page2["records"]), 500)
+        last_id_p2 = page2["snapshot_after_id"]
+
+        # Page 3
+        page3 = self.env["iteso.outbox"].with_user(self.member_user).pull(
+            "contacts",
+            cursor=0,
+            limit=500,
+            snapshot_after_id=last_id_p2,
+            snapshot_until_outbox_id=pinned_outbox,
+        )
+        self.assertFalse(page3["has_more"])
+        self.assertEqual(page3["next_cursor"], pinned_outbox)
+        self.assertGreaterEqual(len(page3["records"]), 200)
+
+        # Verify all contacts collected across pages
+        all_ids = [r["id"] for r in page1["records"]] + [r["id"] for r in page2["records"]] + [r["id"] for r in page3["records"]]
+        self.assertEqual(len(all_ids), len(set(all_ids)))  # No duplicates
+        self.assertGreaterEqual(len(all_ids), 1200)
+
+        # Incremental pull using pinned outbox id picks up the contact modified during download
+        inc = self.env["iteso.outbox"].with_user(self.member_user).pull("contacts", cursor=pinned_outbox)
+        inc_ids = [r["id"] for r in inc["records"]]
+        self.assertIn(p_first.id, inc_ids)
+        updated_first = [r for r in inc["records"] if r["id"] == p_first.id][0]
+        self.assertEqual(updated_first["phone"], "0999111222")

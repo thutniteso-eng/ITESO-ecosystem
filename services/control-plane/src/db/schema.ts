@@ -262,9 +262,22 @@ export const posDevices = pgTable('pos_devices', {
   pairedAt: timestamp('paired_at', { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
+
+export const deviceOdooUsers = pgTable('device_odoo_users', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references((): AnyPgColumn => posDevices.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
   odooUid: integer('odoo_uid'),
+  odooLogin: text('odoo_login'),
   apiKeyEnc: text('api_key_enc'),
   keyExpiresAt: timestamp('key_expires_at', { withTimezone: true }),
+  status: odooUserStatusEnum('status').default('pending').notNull(),
+  lastError: text('last_error'),
+  syncedAt: timestamp('synced_at', { withTimezone: true }),
 });
 
 export const posPairingCodes = pgTable('pos_pairing_codes', {

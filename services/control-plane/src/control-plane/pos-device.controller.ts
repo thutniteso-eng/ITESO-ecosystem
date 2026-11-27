@@ -10,9 +10,11 @@ import {
   Post,
   Put,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { PosDeviceService } from './pos-device.service';
 import { TokenService } from '../auth/token.service';
+import { InternalTokenGuard } from '../auth/internal-token.guard';
 
 @Controller('v1')
 export class PosDeviceController {
@@ -151,19 +153,9 @@ export class PosDeviceController {
     return this.posDeviceService.allocateNumberBlock(deviceAuthHeader, body?.doc_type);
   }
 
-  // Internal endpoints called by Gateway
-  @Get('internal/pos/devices/:id/odoo-credential')
-  async getDeviceOdooCredential(
-    @Param('id') deviceId: string,
-    @Headers('x-tenant') tenantCode?: string,
-  ) {
-    if (!tenantCode) {
-      throw new UnauthorizedException({ error: 'MISSING_TENANT', message: 'X-Tenant header required' });
-    }
-    return this.posDeviceService.getDeviceOdooCredential(deviceId, tenantCode);
-  }
-
+  // Internal endpoints called by Gateway (protected by X-Internal-Token)
   @Get('internal/memberships/:id/permissions')
+  @UseGuards(InternalTokenGuard)
   async getMembershipPermissions(
     @Param('id') membershipId: string,
     @Headers('x-tenant') tenantCode?: string,

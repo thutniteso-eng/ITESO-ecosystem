@@ -97,11 +97,13 @@ services:
       ODOO_CREDENTIALS_KEY_PATH: /app/secrets/odoo_credentials.key
       ODOO_MEMBER_KEY_TTL_DAYS: ${ODOO_MEMBER_KEY_TTL_DAYS:-90}
       ODOO_URL: http://odoo:8069
+      INTERNAL_API_TOKEN_PATH: /app/secrets/internal_api.token
     volumes:
       - ./secrets/ed25519_private.pem:/app/secrets/ed25519_private.pem:ro
       - ./secrets/ed25519_public.pem:/app/secrets/ed25519_public.pem:ro
       - ./secrets/platform_encryption.key:/app/secrets/platform_encryption.key:ro
       - ./secrets/odoo_credentials.key:/app/secrets/odoo_credentials.key:ro
+      - ./secrets/internal_api.token:/app/secrets/internal_api.token:ro
     ports:
       - "127.0.0.1:${CONTROL_PLANE_PORT:-3100}:3100"
     healthcheck:
@@ -145,9 +147,11 @@ services:
       JWT_KEY_ID: ${JWT_KEY_ID:-iteso-ed25519-key-1}
       JWT_PUBLIC_KEY_PATH: /app/secrets/ed25519_public.pem
       ODOO_CREDENTIALS_KEY_PATH: /app/secrets/odoo_credentials.key
+      INTERNAL_API_TOKEN_PATH: /app/secrets/internal_api.token
     volumes:
       - ./secrets/ed25519_public.pem:/app/secrets/ed25519_public.pem:ro
       - ./secrets/odoo_credentials.key:/app/secrets/odoo_credentials.key:ro
+      - ./secrets/internal_api.token:/app/secrets/internal_api.token:ro
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-3000}:3000"
     healthcheck:

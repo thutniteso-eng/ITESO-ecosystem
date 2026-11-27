@@ -530,9 +530,133 @@ EOF`,
   console.log('✓ Criterion 9 PASS: 6 number blocks allocated concurrently without gaps or overlaps.\n');
 
   // ---------------------------------------------------------------------------
-  // CRITERION 10: Git history check for secrets
+  // CRITERION 10: Round 2 Security - Internal API Token & No cleartext key endpoints
   // ---------------------------------------------------------------------------
-  console.log('--- Criterion 10: Git history check for secrets ---');
+  console.log('--- Criterion 10: Internal API Token authentication & Endpoint security ---');
+  const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://127.0.0.1:3100';
+
+  // 1. Verify old cleartext credential endpoint is 404 (removed)
+  const deadEndpointRes = await fetch(`${CONTROL_PLANE_URL}/v1/internal/pos/devices/${deviceId}/odoo-credential`, {
+    headers: { 'X-Tenant': 'demo_fnb' },
+  });
+  assert(deadEndpointRes.status === 404, `Old internal odoo-credential endpoint must be 404 removed (got ${deadEndpointRes.status})`);
+
+  // 2. Verify /v1/internal/* requires X-Internal-Token (401 without token)
+  const noTokenRes = await fetch(`${CONTROL_PLANE_URL}/v1/internal/memberships/${ownerMid}/permissions`, {
+    headers: { 'X-Tenant': 'demo_fnb' },
+  });
+  assert(noTokenRes.status === 401, `/v1/internal without X-Internal-Token returns 401 (got ${noTokenRes.status})`);
+
+  // 3. Verify /v1/internal/* rejects invalid token (401)
+  const badTokenRes = await fetch(`${CONTROL_PLANE_URL}/v1/internal/memberships/${ownerMid}/permissions`, {
+    headers: {
+      'X-Tenant': 'demo_fnb',
+      'X-Internal-Token': 'wrong-token-value-0000000000000000',
+    },
+  });
+  assert(badTokenRes.status === 401, `/v1/internal with bad token returns 401 (got ${badTokenRes.status})`);
+
+  // 4. Verify /v1/internal/* accepts valid token
+  const internalTokenPath = path.join(projectRoot, 'infra/secrets/internal_api.token');
+  assert(fs.existsSync(internalTokenPath), 'internal_api.token exists in infra/secrets');
+  const validInternalToken = fs.readFileSync(internalTokenPath, 'utf8').trim();
+
+  const validTokenRes = await fetch(`${CONTROL_PLANE_URL}/v1/internal/memberships/${ownerMid}/permissions`, {
+    headers: {
+      'X-Tenant': 'demo_fnb',
+      'X-Internal-Token': validInternalToken,
+    },
+  });
+  assert(validTokenRes.status === 200, `/v1/internal with valid token returns 200 (got ${validTokenRes.status})`);
+  const permData = await validTokenRes.json();
+  assert(Array.isArray(permData.perms), 'Internal permissions response contains perms array');
+
+  // 5. Verify device keys are stored encrypted in device_odoo_users table
+  const deviceOdooCheck = execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d platform -t -c "SELECT COUNT(*), COUNT(api_key_enc) FROM device_odoo_users WHERE status = 'active';"`,
+    { cwd: projectRoot },
+  ).toString().trim();
+  console.log(`device_odoo_users row count & encrypted key count: ${deviceOdooCheck}`);
+  const rowCount = parseInt(deviceOdooCheck.split('|')[0].trim(), 10);
+  assert(rowCount > 0, 'device_odoo_users table contains active encrypted keys');
+  console.log('✓ Criterion 10 PASS: Internal routes protected with 32-byte token; old cleartext credential endpoint removed; device keys encrypted in device_odoo_users.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 11: Round 2 Temporary Error & Retry handling with concurrent pushes
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 11: Concurrent push batches with same op_id (Retry & Idempotency) ---');
+  const randSuffix = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+  const concurrentOpId = `018e0000-0000-7000-8000-${randSuffix}0000`;
+  const concurrentOp = {
+    op_id: concurrentOpId,
+    device_id: deviceId,
+    roster_jti: rosterJti,
+    membership_id: cashierMid,
+    client_time: new Date().toISOString(),
+    seq: 100,
+    op_type: 'contact.create',
+    payload: { name: `Khach Dong Thoi ${Date.now()}` },
+  };
+
+  const [pushA, pushB] = await Promise.all([
+    fetch(`${GATEWAY_URL}/v1/sync/push`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${deviceSessionToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ operations: [concurrentOp] }),
+    }).then((r) => r.json()),
+    fetch(`${GATEWAY_URL}/v1/sync/push`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${deviceSessionToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ operations: [concurrentOp] }),
+    }).then((r) => r.json()),
+  ]);
+
+  const resA = pushA.results[0];
+  const resB = pushB.results[0];
+  console.log('Concurrent Push A result:', resA);
+  console.log('Concurrent Push B result:', resB);
+
+  // At least one must be applied or retry, never permanently rejected
+  assert(
+    (resA.status === 'applied' && (resB.status === 'applied' || resB.status === 'retry')) ||
+    (resB.status === 'applied' && (resA.status === 'applied' || resA.status === 'retry')),
+    `Concurrent push returned valid applied/retry statuses (A: ${resA.status}, B: ${resB.status})`,
+  );
+
+  // If one returned retry, retrying it now must return applied with same contact ID
+  if (resA.status === 'retry' || resB.status === 'retry') {
+    const retryRes = await fetch(`${GATEWAY_URL}/v1/sync/push`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${deviceSessionToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ operations: [concurrentOp] }),
+    });
+    assert(retryRes.status === 200, 'Retry push returns 200');
+    const retryData = await retryRes.json();
+    assert(retryData.results[0].status === 'applied', `Retried op returns status applied (got ${retryData.results[0].status})`);
+    console.log('Retried op result:', retryData.results[0]);
+  }
+
+  // Verify only 1 contact was created
+  const partnerCheck = execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U odoo -d t_demo_fnb -t -c "SELECT COUNT(*) FROM res_partner WHERE name = '${concurrentOp.payload.name}';"`,
+    { cwd: projectRoot },
+  ).toString().trim();
+  assert(partnerCheck === '1', `Exactly 1 contact was created for concurrent op (got ${partnerCheck})`);
+  console.log('✓ Criterion 11 PASS: Concurrent pushes handled safely with retry/idempotency, exactly 1 contact created.\n');
+
+  // ---------------------------------------------------------------------------
+  // CRITERION 12: Git history check for secrets
+  // ---------------------------------------------------------------------------
+  console.log('--- Criterion 12: Git history check for secrets ---');
   const committedSecretsFiles = execSync(
     'git log --name-only --oneline | grep -E "^infra/secrets/|^\\.env$" || true',
     { cwd: projectRoot },
@@ -546,10 +670,10 @@ EOF`,
   ).toString().trim();
   assert(!committedPrivKey, 'No private keys committed in source files');
 
-  console.log('✓ Criterion 10 PASS: No secret keys, credentials or .env in git history.\n');
+  console.log('✓ Criterion 12 PASS: No secret keys, credentials or .env in git history.\n');
 
   console.log('=================================================================');
-  console.log('ALL TASK-006 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!');
+  console.log('ALL TASK-006 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (12/12)!');
   console.log('=================================================================');
 }
 

@@ -1,10 +1,11 @@
-import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import * as schema from '../src/db/schema';
 import { PosDeviceService } from '../src/control-plane/pos-device.service';
 import { TokenService } from '../src/auth/token.service';
 import { NatsService } from '../src/nats/nats.service';
 import { OdooProvisioningService } from '../src/control-plane/odoo-provisioning.service';
 import { validatePinComplexity, verifyPassword } from '../src/auth/crypto.util';
+import { InternalTokenGuard } from '../src/auth/internal-token.guard';
 
 describe('TASK-005 & TASK-006: Control Plane PosDeviceService & PIN Unit Tests', () => {
   let service: PosDeviceService;
@@ -230,6 +231,153 @@ describe('TASK-005 & TASK-006: Control Plane PosDeviceService & PIN Unit Tests',
         tenant_id: 't-1',
         status: 'revoked',
       });
+    });
+  });
+
+  describe('Allocate Number Blocks Concurrency (TASK-006 Round 2: Point 4)', () => {
+    it('allocates 10 concurrent blocks of 1,000 numbers without overlaps or gaps', async () => {
+      jest.spyOn(service, 'authenticateDevice').mockResolvedValue({
+        device: { id: 'd-1', tenantId: 't-1', branchId: 'b-1', status: 'active' } as unknown as typeof schema.posDevices.$inferSelect,
+        tenant: { id: 't-1', code: 'demo_fnb', status: 'active' } as unknown as typeof schema.tenants.$inferSelect,
+        branch: { id: 'b-1', code: 'main', status: 'active' } as unknown as typeof schema.branches.$inferSelect,
+      });
+
+      // Simulate PostgreSQL state and advisory locking
+      let sharedMaxEnd = 0;
+      let isLocked = false;
+      const allocatedBlocks: Array<{ start: number; end: number }> = [];
+
+      const mockPgPool = (service as unknown as { pgPool: { connect: jest.Mock } }).pgPool;
+      mockPgPool.connect = jest.fn().mockImplementation(async () => {
+        let inTx = false;
+        return {
+          query: jest.fn().mockImplementation(async (sql: string, params?: unknown[]) => {
+            if (sql === 'BEGIN') {
+              inTx = true;
+              return { rows: [] };
+            }
+            if (sql.includes('pg_advisory_xact_lock')) {
+              // Wait if currently locked (simulating PostgreSQL advisory transaction lock queue)
+              while (isLocked) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+              }
+              isLocked = true;
+              return { rows: [] };
+            }
+            if (sql.includes('MAX(range_end)')) {
+              return { rows: [{ max_end: sharedMaxEnd }] };
+            }
+            if (sql.includes('INSERT INTO device_number_blocks')) {
+              const start = params![3] as number;
+              const end = params![4] as number;
+              sharedMaxEnd = end;
+              allocatedBlocks.push({ start, end });
+              return { rows: [] };
+            }
+            if (sql === 'COMMIT') {
+              inTx = false;
+              isLocked = false;
+              return { rows: [] };
+            }
+            if (sql === 'ROLLBACK') {
+              inTx = false;
+              isLocked = false;
+              return { rows: [] };
+            }
+            return { rows: [] };
+          }),
+          release: jest.fn().mockImplementation(() => {
+            if (inTx) {
+              isLocked = false;
+            }
+          }),
+        };
+      });
+
+      // Execute 10 requests concurrently
+      const concurrentRequests = Array.from({ length: 10 }, () =>
+        service.allocateNumberBlock('Device mock_token', 'order'),
+      );
+
+      const results = await Promise.all(concurrentRequests);
+      expect(results).toHaveLength(10);
+
+      // Verify each block has size 1,000
+      for (const res of results) {
+        expect(res.doc_type).toBe('order');
+        expect(res.range_end - res.range_start + 1).toBe(1000);
+      }
+
+      // Sort by range_start
+      const sorted = [...results].sort((a, b) => a.range_start - b.range_start);
+
+      // Verify continuous without overlaps
+      expect(sorted[0].range_start).toBe(1);
+      expect(sorted[sorted.length - 1].range_end).toBe(10000);
+
+      for (let i = 0; i < sorted.length - 1; i++) {
+        expect(sorted[i].range_end + 1).toBe(sorted[i + 1].range_start);
+      }
+    });
+
+    it('rejects invalid doc_type with BadRequestException', async () => {
+      jest.spyOn(service, 'authenticateDevice').mockResolvedValue({
+        device: { id: 'd-1', tenantId: 't-1', branchId: 'b-1', status: 'active' } as unknown as typeof schema.posDevices.$inferSelect,
+        tenant: { id: 't-1', code: 'demo_fnb', status: 'active' } as unknown as typeof schema.tenants.$inferSelect,
+        branch: { id: 'b-1', code: 'main', status: 'active' } as unknown as typeof schema.branches.$inferSelect,
+      });
+
+      await expect(
+        service.allocateNumberBlock('Device mock_token', 'invoice'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('InternalTokenGuard (TASK-006 Round 2: Point 1)', () => {
+    let guard: InternalTokenGuard;
+    const testSecret = '0123456789abcdef0123456789abcdef';
+
+    beforeEach(() => {
+      process.env.INTERNAL_API_TOKEN = testSecret;
+      guard = new InternalTokenGuard();
+    });
+
+    afterEach(() => {
+      delete process.env.INTERNAL_API_TOKEN;
+    });
+
+    it('rejects request missing X-Internal-Token with 401', () => {
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({ headers: {} }),
+        }),
+      } as unknown as ExecutionContext;
+
+      expect(() => guard.canActivate(mockContext)).toThrow(UnauthorizedException);
+    });
+
+    it('rejects request with invalid X-Internal-Token with 401', () => {
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            headers: { 'x-internal-token': 'wrong-secret-token-12345678901234' },
+          }),
+        }),
+      } as unknown as ExecutionContext;
+
+      expect(() => guard.canActivate(mockContext)).toThrow(UnauthorizedException);
+    });
+
+    it('allows request with valid matching X-Internal-Token', () => {
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            headers: { 'x-internal-token': testSecret },
+          }),
+        }),
+      } as unknown as ExecutionContext;
+
+      expect(guard.canActivate(mockContext)).toBe(true);
     });
   });
 });

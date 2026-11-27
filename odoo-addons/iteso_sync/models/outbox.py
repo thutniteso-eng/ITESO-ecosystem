@@ -42,11 +42,15 @@ class ItesoOutbox(models.Model):
         return count
 
     @api.model
-    def pull(self, dataset, cursor=0, limit=500):
+    def pull(self, dataset, cursor=0, limit=500, snapshot_after_id=0, snapshot_until_outbox_id=0):
         """
-        Pull updated dataset records after cursor.
+        Pull updated dataset records after cursor or snapshot pagination.
         dataset="contacts":
-          - cursor=0: returns all active/inactive partners, next_cursor=latest outbox id
+          - cursor=0: returns all active/inactive partners with snapshot pagination.
+                      snapshot_after_id: id of last partner fetched in previous page.
+                      snapshot_until_outbox_id: pinned outbox id at start of snapshot.
+                      has_more: True if more partners exist after this page.
+                      next_cursor: 0 while has_more=True; pinned outbox id when has_more=False.
           - cursor>0 and older than oldest outbox: returns reset_required: True
           - cursor>0: returns changes (create/write/unlink) since cursor
         """
@@ -55,6 +59,8 @@ class ItesoOutbox(models.Model):
 
         limit = min(max(int(limit or 100), 1), 500)
         cursor = int(cursor or 0)
+        snapshot_after_id = int(snapshot_after_id or 0)
+        snapshot_until_outbox_id = int(snapshot_until_outbox_id or 0)
 
         # Check if cursor is older than the oldest retained outbox entry
         oldest = self.search([("model", "=", "res.partner")], order="id asc", limit=1)
@@ -63,11 +69,24 @@ class ItesoOutbox(models.Model):
                 "reset_required": True,
                 "records": [],
                 "next_cursor": cursor,
+                "has_more": False,
             }
 
         if cursor == 0:
-            # Full snapshot download
-            partners = self.env["res.partner"].search([("active", "in", [True, False])], order="id asc", limit=limit)
+            # Full snapshot download with pagination
+            if snapshot_until_outbox_id <= 0:
+                latest_outbox = self.search([("model", "=", "res.partner")], order="id desc", limit=1)
+                snapshot_until_outbox_id = latest_outbox.id if latest_outbox else 0
+
+            domain = [("active", "in", [True, False])]
+            if snapshot_after_id > 0:
+                domain.append(("id", ">", snapshot_after_id))
+
+            partners = self.env["res.partner"].search(domain, order="id asc", limit=limit + 1)
+            has_more = len(partners) > limit
+            if has_more:
+                partners = partners[:limit]
+
             records = [
                 {
                     "id": p.id,
@@ -80,12 +99,15 @@ class ItesoOutbox(models.Model):
                 for p in partners
             ]
 
-            latest_outbox = self.search([("model", "=", "res.partner")], order="id desc", limit=1)
-            next_cursor = latest_outbox.id if latest_outbox else 0
+            last_id = partners[-1].id if partners else snapshot_after_id
+            next_cursor = snapshot_until_outbox_id if not has_more else 0
             return {
                 "reset_required": False,
                 "records": records,
                 "next_cursor": next_cursor,
+                "has_more": has_more,
+                "snapshot_after_id": last_id,
+                "snapshot_until_outbox_id": snapshot_until_outbox_id,
             }
 
         # Incremental pull
@@ -103,6 +125,7 @@ class ItesoOutbox(models.Model):
                 "reset_required": False,
                 "records": [],
                 "next_cursor": cursor,
+                "has_more": False,
             }
 
         next_cursor = outbox_entries[-1].id
@@ -137,4 +160,5 @@ class ItesoOutbox(models.Model):
             "reset_required": False,
             "records": list(records_by_id.values()),
             "next_cursor": next_cursor,
+            "has_more": False,
         }

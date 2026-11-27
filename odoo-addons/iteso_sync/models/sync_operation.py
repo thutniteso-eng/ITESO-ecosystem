@@ -28,6 +28,7 @@ class ItesoSyncOperation(models.Model):
             ("applied", "Applied"),
             ("rejected", "Rejected"),
             ("needs_review", "Needs Review"),
+            ("retry", "Retry"),
         ],
         string="Status",
         required=True,
@@ -149,30 +150,16 @@ class ItesoSyncOperation(models.Model):
                         "reason": reason,
                     })
             except Exception as exc:
-                _logger.exception("Failed to process sync operation %s: %s", op_id, exc)
-                # Outer savepoint rolled back. Record rejected ledger row in new savepoint
-                try:
-                    with self.env.cr.savepoint():
-                        self.create({
-                            "op_id": op_id,
-                            "device_id": device_id,
-                            "membership_id": membership_id,
-                            "op_type": op_type,
-                            "seq": seq,
-                            "client_time": client_time_val,
-                            "server_time": fields.Datetime.now(),
-                            "status": "rejected",
-                            "result": None,
-                            "error": str(exc),
-                        })
-                except Exception:
-                    pass
-
+                _logger.warning("Temporary or unexpected failure processing sync operation %s: %s", op_id, exc)
+                # Outer savepoint automatically rolled back!
+                # Do NOT record in iteso.sync.operation!
+                err_str = str(exc).lower()
+                err_code = "CONCURRENT_OP" if ("unique" in err_str or "duplicate" in err_str) else "TEMPORARY_ERROR"
                 results.append({
                     "op_id": op_id,
-                    "status": "rejected",
+                    "status": "retry",
                     "result": None,
-                    "reason": str(exc),
+                    "reason": err_code,
                 })
 
         return results
