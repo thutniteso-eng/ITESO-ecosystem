@@ -559,7 +559,16 @@ EOF`,
   // 4. Verify /v1/internal/* accepts valid token
   const internalTokenPath = path.join(projectRoot, 'infra/secrets/internal_api.token');
   assert(fs.existsSync(internalTokenPath), 'internal_api.token exists in infra/secrets');
-  const validInternalToken = fs.readFileSync(internalTokenPath, 'utf8').trim();
+  let validInternalToken = '';
+  try {
+    validInternalToken = fs.readFileSync(internalTokenPath, 'utf8').trim();
+  } catch {
+    validInternalToken = execSync(
+      `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane cat /app/secrets/internal_api.token`,
+      { cwd: projectRoot },
+    ).toString().trim();
+  }
+  assert(validInternalToken.length === 64, 'valid internal token is 64 hex characters (32 bytes)');
 
   const validTokenRes = await fetch(`${CONTROL_PLANE_URL}/v1/internal/memberships/${ownerMid}/permissions`, {
     headers: {
