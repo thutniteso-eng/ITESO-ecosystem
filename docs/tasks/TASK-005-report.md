@@ -175,14 +175,14 @@ pnpm --filter @iteso/control-plane test
 > @iteso/control-plane@0.1.0 test /home/iteso/projects/ITESO-ecosystem/services/control-plane
 > jest
 
-PASS test/odoo-provisioning.spec.ts
-PASS test/pos-device.spec.ts
-PASS test/app.spec.ts (5.774 s)
+PASS test/odoo-provisioning.spec.ts (5.185 s)
+PASS test/pos-device.spec.ts (6.41 s)
+PASS test/app.spec.ts (7.23 s)
 
 Test Suites: 3 passed, 3 total
-Tests:       29 passed, 29 total
+Tests:       33 passed, 33 total
 Snapshots:   0 total
-Time:        6.501 s
+Time:        8.148 s, estimated 11 s
 Ran all test suites.
 pnpm --filter @iteso/gateway test
 
@@ -194,9 +194,9 @@ PASS test/odoo-credential.spec.ts
 PASS test/app.spec.ts
 
 Test Suites: 3 passed, 3 total
-Tests:       31 passed, 31 total
+Tests:       34 passed, 34 total
 Snapshots:   0 total
-Time:        4.178 s
+Time:        5.656 s
 Ran all test suites.
 ./scripts/test-db-isolation.sh
 [test-db-isolation] PASS: All database isolation checks passed cleanly.
@@ -204,4 +204,177 @@ Ran all test suites.
 [test-odoo-module] ALL TESTS PASSED for iteso_base.
 node ./scripts/test-acceptance-criteria.js
 ALL TASK-005 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!
+```
+
+## Vòng 2
+
+Thực hiện toàn bộ 5 điểm theo review của Claude trên GitHub PR #9:
+
+### 1. Chi tiết thực hiện
+
+1. **[Quan trọng] Kiểm tra cờ tính năng `pos.devices` cấp tenant trên 4 route máy POS (`pair`, `pin`, `refresh`, `roster`):**
+   - Các route thiết bị POS tại Gateway là `@Public()` hoặc xác thực qua thiết bị `Device <device_token>`, Gateway không có context tenant người dùng ban đầu.
+   - Tại `PosDeviceService` trong control-plane, bổ sung hàm `assertTenantFeatureEnabled(tenantId: string, featureKey: string = 'pos.devices')`:
+     - Kiểm tra định nghĩa tính năng `featureDefinitions`: `implementationStatus === 'available'` và `platformEnabled === true`.
+     - Kiểm tra trạng thái cấp tenant `tenantFeatures`: nếu có dòng cấu hình thì lấy giá trị `enabled`, nếu chưa có thì lấy `defaultEnabled` của feature definition. Nếu không bật, ném `ForbiddenException({ error: 'FEATURE_DISABLED', message: ... })`.
+   - Áp dụng kiểm tra này vào:
+     - `createPairingCode`: Kiểm tra theo tenant của thành viên gọi API.
+     - `pairDevice`: Kiểm tra theo `tenant_id` của bản ghi `pos_pairing_codes` trước khi ghép máy.
+     - `authenticateDevice`: Kiểm tra theo `tenant_id` của máy POS trước khi cho phép vào các route `pos/auth/pin`, `pos/auth/refresh`, `pos/roster`.
+   - Bổ sung unit test trong `pos-device.spec.ts` và kiểm thử nghiệm thu thực tế: vô hiệu hóa `pos.devices` cho tenant `demo_fnb` khiến cả 4 route trả về `403 FEATURE_DISABLED`; khi bật lại thì hoạt động bình thường.
+
+2. **Hash PIN giả hợp lệ chuẩn argon2id để chống timing attacks:**
+   - Tại `PosDeviceService`, trong hàm `onModuleInit`, tính toán trước một hash dummy hợp lệ qua `hashPassword('timing-defense-dummy-pin-000000')` (sinh chuỗi chuẩn `$argon2id$v=19$m=19456,t=2,p=1$...`).
+   - Dummy verification luôn gọi đúng `verifyPassword(this.dummyPinHash, pin)` đảm bảo chi phí tính toán CPU/bộ nhớ đồng nhất như tài khoản thật, triệt tiêu kênh phụ suy đoán sự tồn tại của tài khoản hay mã PIN.
+   - Bổ sung unit test xác thực định dạng argon2id của dummy hash.
+
+3. **Chặn tài khoản bị vô hiệu dùng PIN:**
+   - Tại `PosDeviceService`:
+     - `loginWithPin`: Kiểm tra `account.status === 'active'`. Nếu tài khoản bị vô hiệu (`disabled`), chạy dummy verification và trả về `401 INVALID_PIN`.
+     - `refreshPinSession`: Kiểm tra `account.status === 'active'`. Nếu tài khoản bị vô hiệu, từ chối với `403 ACCOUNT_DISABLED`.
+     - `getRoster`: Loại bỏ thành viên có `account.status !== 'active'` khỏi roster ngoại tuyến.
+   - Bổ sung unit test và kiểm tra tích hợp nghiệm thu thực tế.
+
+4. **Tạo mã ghép phải nằm trong phạm vi chi nhánh (`branch_scope`) của người tạo:**
+   - Tại `PosDeviceService.createPairingCode`: Kiểm tra `membership.branchScope`. Nếu thành viên có `branch_scope` (danh sách không rỗng) và mã chi nhánh mục tiêu (`branch_code`) không nằm trong danh sách này, trả về `403 BRANCH_FORBIDDEN`.
+   - Bổ sung unit test và kiểm tra nghiệm thu tích hợp.
+
+5. **Gateway xác minh máy POS thuộc đúng tenant của token:**
+   - Tại Gateway `AuthGuard`: khi access token có claim thiết bị (`did`), sau khi xác minh thiết bị active (`deviceVerifier.verifyDeviceActive(payload.did)`), truy vấn tenant của token qua `platformService.getActiveTenant(payload.tid)`. Nếu `device.tenantId !== tenant.id`, từ chối ngay lập tức với `403 TENANT_MISMATCH`.
+   - Bổ sung unit test trong `services/gateway/test/app.spec.ts` và kiểm thử tích hợp.
+
+---
+
+### 2. Output kiểm thử Vòng 2
+
+#### a) Unit Tests (`control-plane` & `gateway`)
+```text
+PASS test/odoo-provisioning.spec.ts (5.185 s)
+PASS test/pos-device.spec.ts (6.41 s)
+PASS test/app.spec.ts (7.23 s)
+
+Test Suites: 3 passed, 3 total
+Tests:       33 passed, 33 total
+Snapshots:   0 total
+Time:        8.148 s, estimated 11 s
+Ran all test suites.
+
+PASS test/device-verification.spec.ts
+PASS test/odoo-credential.spec.ts
+PASS test/app.spec.ts
+
+Test Suites: 3 passed, 3 total
+Tests:       34 passed, 34 total
+Snapshots:   0 total
+Time:        5.656 s
+Ran all test suites.
+```
+
+#### b) Kiểm thử tích hợp nghiệm thu thực tế (`node ./scripts/test-acceptance-criteria.js`)
+```text
+=================================================================
+STARTING TASK-005 ACCEPTANCE CRITERIA VERIFICATION
+=================================================================
+
+--- Setup: Authenticating demo accounts ---
+Owner MID: 14345ef1-3243-45dc-80b6-f6f9d4a4d38e, Cashier MID: 250eeb60-290d-491b-b049-a5148fa17c96
+
+--- Criterion 1: Pairing code generation & POS device pairing ---
+Pairing code response: {
+  pairing_code: 'FUU9MLBL',
+  expires_at: '2026-11-27T12:37:48.912Z',
+  device_name: 'POS Quầy 1',
+  branch_code: 'main'
+}
+Paired device info: {
+  device_id: 'c6b74b3e-a8ba-4557-a054-570902981861',
+  branch: {
+    id: '9966253d-26be-4b9d-a973-c89ed384fdf3',
+    code: 'main',
+    name: 'Chi nhánh chính'
+  },
+  has_token: true,
+  has_jwk: true
+}
+✓ Criterion 1 PASS: Pairing code generated and device paired successfully.
+
+--- Criterion 2: Cashier sets PIN & logs in on POS device (403 diagnostics) ---
+✓ Criterion 2 PASS: Cashier PIN login token carries cashier permissions (403 on diagnostics).
+
+--- Criterion 3: Owner sets PIN & logs in on POS device (200 with odoo_uid) ---
+Owner diagnostics response: {
+  tenant: 'demo_fnb',
+  database: 't_demo_fnb',
+  api: 'json-2',
+  version: '20.0-20261123',
+  version_info: [ 20, 0, 0, 'final', 0, '' ],
+  base_module_version: '20.0.1.3',
+  odoo_uid: 7
+}
+✓ Criterion 3 PASS: Owner PIN login token yields 200 OK with owner odoo_uid.
+
+--- Criterion 4: Fast user switching on same device without passwords ---
+✓ Criterion 4 PASS: Fast user switching completed in 3 API calls without passwords.
+
+--- Criterion 5: PIN brute-force lockout after 5 failed attempts ---
+Database lock state (failed_attempts|locked_until_active): 5|t
+✓ Criterion 5 PASS: Account locked after 5 failed attempts, 6th attempt rejected.
+
+--- Criterion 6: Offline Roster download, Ed25519 signature & Argon2 verification ---
+Roster payload summary: {
+  iss: 'iteso-control-plane',
+  sub: 'c6b74b3e-a8ba-4557-a054-570902981861',
+  aud: 'iteso-pos',
+  exp: 1795868870,
+  members_count: 2
+}
+✓ Criterion 6 PASS: Roster JWS signature verified, payload correct, offline PIN check succeeded.
+
+--- Criterion 7: Device revocation & immediate gateway rejection (<2s) ---
+✓ Criterion 7 PASS: Device revoked; gateway immediately returns 401 DEVICE_REVOKED, refresh and roster rejected.
+
+--- Criterion 8: Pairing code reuse/expiry & PIN complexity ---
+✓ Criterion 8 PASS: Pairing code reuse/expiry and PIN complexity properly enforced.
+
+--- Criterion 9: Regressions & TASK-004 Backlog Items ---
+9.1 Testing challenge_token reuse after control-plane restart...
+Restarting control-plane container...
+ Container iteso-ecosystem-control-plane-1 Restarting 
+ Container iteso-ecosystem-control-plane-1 Started 
+Waiting for control-plane to restart and become healthy...
+✓ 9.1 Reused challenge_token strictly rejected after restart (Redis persistence verified).
+[test-db-isolation] Verifying 'iteso_gateway' can connect to 'platform' and SELECT tenants...
+[test-db-isolation] Verifying 'iteso_gateway' is DENIED access to 't_demo_fnb' (res_users)...
+[test-db-isolation] Verifying 'iteso_gateway' cannot write to 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' cannot SELECT from 'admin_audit_log' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' cannot SELECT from 'accounts' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' can SELECT the 6 permitted columns from 'membership_odoo_users' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT unpermitted column 'last_error' or 'synced_at' on 'membership_odoo_users'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'tenant_odoo_system_keys' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'refresh_tokens' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' can SELECT permitted 4 columns from 'pos_devices' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT unpermitted column 'token_hash' on 'pos_devices'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'branches' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'pos_pairing_codes' in 'platform'...
+[test-db-isolation] Verifying 'iteso_gateway' CANNOT SELECT from 'membership_pins' in 'platform'...
+[test-db-isolation] PASS: All database isolation checks passed cleanly.
+✓ Criterion 9 PASS: Prior tasks criteria, backlog items, and database isolation intact.
+
+--- TASK-005 Round 2: Verifying 5 Mandated Fixes ---
+R2.4: Testing branch_scope restriction on pairing code creation...
+✓ R2.4 PASS: branch_scope check strictly enforced (403 BRANCH_FORBIDDEN).
+R2.3: Testing inactive account rejection on PIN login...
+✓ R2.3 PASS: Disabled account rejected with 401 INVALID_PIN.
+R2.5: Testing Gateway TENANT_MISMATCH check when device belongs to another tenant...
+✓ R2.5 PASS: Gateway TENANT_MISMATCH strictly enforced for device tokens.
+R2.1: Testing tenant-level pos.devices flag blocks all 4 POS routes...
+✓ R2.1 (All 4 routes returned 403 FEATURE_DISABLED when pos.devices is disabled for tenant).
+✓ R2.1 PASS: All 4 POS routes blocked when tenant feature is disabled and unblocked when re-enabled.
+
+--- Criterion 10: Git history check for secrets ---
+✓ Criterion 10 PASS: No secret keys, credentials or .env in git history.
+
+=================================================================
+ALL TASK-005 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!
+=================================================================
 ```

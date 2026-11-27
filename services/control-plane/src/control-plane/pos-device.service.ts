@@ -3,6 +3,8 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -13,6 +15,7 @@ import * as schema from '../db/schema';
 import {
   generatePairingCode,
   generateRandomToken,
+  hashPassword,
   sha256,
   validatePinComplexity,
   verifyPassword,
@@ -46,11 +49,10 @@ export interface PosPinLoginResult {
 }
 
 @Injectable()
-export class PosDeviceService {
+export class PosDeviceService implements OnModuleInit, OnModuleDestroy {
   private readonly db: NodePgDatabase<typeof schema>;
   private readonly pgPool: Pool;
-  private readonly dummyPinHash =
-    '$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlzYWx0MTIzNDU2Nw$dummyhashdummyhashdummyhashdummyhashdummyhash';
+  private dummyPinHash!: string;
 
   // In-memory IP rate limiter for /v1/pos/devices/pair (10 requests / minute / IP)
   private readonly pairAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -70,8 +72,49 @@ export class PosDeviceService {
     this.db = drizzle(this.pgPool, { schema });
   }
 
+  async onModuleInit(): Promise<void> {
+    // Generate valid dummy argon2id hash to prevent timing attacks (TASK-005 Round 2)
+    this.dummyPinHash = await hashPassword('timing-defense-dummy-pin-000000');
+  }
+
+  getDummyPinHash(): string {
+    return this.dummyPinHash;
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.pgPool.end();
+  }
+
+  // -------------------------------------------------------------
+  // Tenant Feature Evaluation (TASK-005 Round 2: Point 1)
+  // -------------------------------------------------------------
+
+  async assertTenantFeatureEnabled(tenantId: string, featureKey: string = 'pos.devices'): Promise<void> {
+    const feat = await this.db.query.featureDefinitions.findFirst({
+      where: eq(schema.featureDefinitions.key, featureKey),
+    });
+
+    if (!feat || feat.implementationStatus !== 'available' || !feat.platformEnabled) {
+      throw new ForbiddenException({
+        error: 'FEATURE_DISABLED',
+        message: `Feature '${featureKey}' is disabled platform-wide or not available`,
+      });
+    }
+
+    const tenantFeat = await this.db.query.tenantFeatures.findFirst({
+      where: and(
+        eq(schema.tenantFeatures.tenantId, tenantId),
+        eq(schema.tenantFeatures.featureKey, featureKey),
+      ),
+    });
+
+    const isEnabled = tenantFeat ? tenantFeat.enabled : feat.defaultEnabled;
+    if (!isEnabled) {
+      throw new ForbiddenException({
+        error: 'FEATURE_DISABLED',
+        message: `Feature '${featureKey}' is disabled for this tenant`,
+      });
+    }
   }
 
   // -------------------------------------------------------------
@@ -107,6 +150,9 @@ export class PosDeviceService {
       });
     }
 
+    // Check pos.devices feature for tenant
+    await this.assertTenantFeatureEnabled(tenant.id, 'pos.devices');
+
     const branch = await this.db.query.branches.findFirst({
       where: and(
         eq(schema.branches.tenantId, tenant.id),
@@ -118,6 +164,32 @@ export class PosDeviceService {
         error: 'BRANCH_NOT_FOUND',
         message: `Active branch with code '${branchCode}' not found`,
       });
+    }
+
+    // Check caller branch scope (TASK-005 Round 2: Point 4)
+    if (authPayload.mid) {
+      const callerMembership = await this.db.query.memberships.findFirst({
+        where: and(
+          eq(schema.memberships.id, authPayload.mid),
+          eq(schema.memberships.tenantId, tenant.id),
+        ),
+      });
+
+      if (!callerMembership || callerMembership.status !== 'active') {
+        throw new ForbiddenException({
+          error: 'MEMBERSHIP_FORBIDDEN',
+          message: 'Caller membership not active in tenant',
+        });
+      }
+
+      if (callerMembership.branchScope && callerMembership.branchScope.length > 0) {
+        if (!callerMembership.branchScope.includes(branch.code)) {
+          throw new ForbiddenException({
+            error: 'BRANCH_FORBIDDEN',
+            message: `Your membership does not have access to branch '${branch.code}'`,
+          });
+        }
+      }
     }
 
     const rawCode = generatePairingCode(8);
@@ -173,13 +245,31 @@ export class PosDeviceService {
     const codeHash = sha256(pairingCode.trim());
     const now = new Date();
 
+    const pairingRecord = await this.db.query.posPairingCodes.findFirst({
+      where: and(
+        eq(schema.posPairingCodes.codeHash, codeHash),
+        sql`${schema.posPairingCodes.usedAt} IS NULL`,
+        sql`${schema.posPairingCodes.expiresAt} > ${now}`,
+      ),
+    });
+
+    if (!pairingRecord) {
+      throw new UnauthorizedException({
+        error: 'INVALID_PAIRING_CODE',
+        message: 'Pairing code is invalid, expired, or already used',
+      });
+    }
+
+    // TASK-005 Round 2 (Point 1): Check tenant feature pos.devices BEFORE pairing
+    await this.assertTenantFeatureEnabled(pairingRecord.tenantId, 'pos.devices');
+
     // Atomic update of used_at to ensure single-use even under concurrent requests
     const updated = await this.db
       .update(schema.posPairingCodes)
       .set({ usedAt: now })
       .where(
         and(
-          eq(schema.posPairingCodes.codeHash, codeHash),
+          eq(schema.posPairingCodes.id, pairingRecord.id),
           sql`${schema.posPairingCodes.usedAt} IS NULL`,
           sql`${schema.posPairingCodes.expiresAt} > ${now}`,
         ),
@@ -503,6 +593,9 @@ export class PosDeviceService {
       });
     }
 
+    // TASK-005 Round 2 (Point 1): Check pos.devices feature for tenant of device
+    await this.assertTenantFeatureEnabled(tenant.id, 'pos.devices');
+
     const branch = await this.db.query.branches.findFirst({
       where: eq(schema.branches.id, device.branchId),
     });
@@ -547,6 +640,18 @@ export class PosDeviceService {
     });
 
     if (!membership || membership.status !== 'active') {
+      await verifyPassword(this.dummyPinHash, pin);
+      throw new UnauthorizedException({
+        error: 'INVALID_PIN',
+        message: 'Invalid PIN or credentials',
+      });
+    }
+
+    // TASK-005 Round 2 (Point 3): Account must be active
+    const account = await this.db.query.accounts.findFirst({
+      where: eq(schema.accounts.id, membership.accountId),
+    });
+    if (!account || account.status !== 'active') {
       await verifyPassword(this.dummyPinHash, pin);
       throw new UnauthorizedException({
         error: 'INVALID_PIN',
@@ -641,10 +746,6 @@ export class PosDeviceService {
     }
 
     // 5. Issue access token and device-bound refresh token
-    const account = await this.db.query.accounts.findFirst({
-      where: eq(schema.accounts.id, membership.accountId),
-    });
-
     const accessPayload: AccessTokenPayload = {
       sub: membership.accountId,
       tid: tenant.code,
@@ -772,6 +873,14 @@ export class PosDeviceService {
       where: eq(schema.accounts.id, membership.accountId),
     });
 
+    // TASK-005 Round 2 (Point 3): Account must be active
+    if (!account || account.status !== 'active') {
+      throw new ForbiddenException({
+        error: 'ACCOUNT_DISABLED',
+        message: 'Account is disabled or inactive',
+      });
+    }
+
     const accessPayload: AccessTokenPayload = {
       sub: membership.accountId,
       tid: tenant.code,
@@ -898,10 +1007,14 @@ export class PosDeviceService {
         continue;
       }
 
-      // Display name from account
+      // Display name from account & check account status is active (TASK-005 Round 2: Point 3)
       const account = await this.db.query.accounts.findFirst({
         where: eq(schema.accounts.id, m.accountId),
       });
+
+      if (!account || account.status !== 'active') {
+        continue;
+      }
 
       const displayName = account?.email || account?.phone || `Staff ${m.id.slice(0, 8)}`;
 

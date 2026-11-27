@@ -1,15 +1,16 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import * as schema from '../src/db/schema';
 import { PosDeviceService } from '../src/control-plane/pos-device.service';
 import { TokenService } from '../src/auth/token.service';
 import { NatsService } from '../src/nats/nats.service';
-import { validatePinComplexity } from '../src/auth/crypto.util';
+import { validatePinComplexity, verifyPassword } from '../src/auth/crypto.util';
 
 describe('TASK-005: Control Plane PosDeviceService & PIN Unit Tests', () => {
   let service: PosDeviceService;
   let tokenService: TokenService;
   let natsService: NatsService;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tokenService = {
       signAccessToken: jest.fn().mockResolvedValue('mock_access_token'),
       signRosterJws: jest.fn().mockResolvedValue('mock_roster_jws'),
@@ -22,6 +23,7 @@ describe('TASK-005: Control Plane PosDeviceService & PIN Unit Tests', () => {
     } as unknown as NatsService;
 
     service = new PosDeviceService(tokenService, natsService);
+    await service.onModuleInit();
   });
 
   afterEach(async () => {
@@ -75,6 +77,103 @@ describe('TASK-005: Control Plane PosDeviceService & PIN Unit Tests', () => {
       await expect(
         service.createPairingCode({ sub: 'user-1' }, 'main', 'POS 1'),
       ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('throws BRANCH_FORBIDDEN when branch is outside caller branchScope (TASK-005 Round 2: Point 4)', async () => {
+      const dbMock = (service as unknown as { db: { query: Record<string, { findFirst: jest.Mock }> } }).db;
+      jest.spyOn(dbMock.query.tenants, 'findFirst').mockResolvedValue({
+        id: 't-1',
+        code: 'demo_fnb',
+        status: 'active',
+      });
+      jest.spyOn(dbMock.query.featureDefinitions, 'findFirst').mockResolvedValue({
+        key: 'pos.devices',
+        implementationStatus: 'available',
+        platformEnabled: true,
+        defaultEnabled: true,
+      });
+      jest.spyOn(dbMock.query.tenantFeatures, 'findFirst').mockResolvedValue(null);
+      jest.spyOn(dbMock.query.branches, 'findFirst').mockResolvedValue({
+        id: 'b-2',
+        tenantId: 't-1',
+        code: 'branch_b',
+        name: 'Chi nhánh B',
+        status: 'active',
+      });
+      // Caller has branchScope = ['branch_a']
+      jest.spyOn(dbMock.query.memberships, 'findFirst').mockResolvedValue({
+        id: 'm-1',
+        tenantId: 't-1',
+        status: 'active',
+        branchScope: ['branch_a'],
+      });
+
+      await expect(
+        service.createPairingCode({ sub: 'user-1', tid: 'demo_fnb', mid: 'm-1' }, 'branch_b', 'POS 2'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('throws FEATURE_DISABLED when pos.devices is disabled for tenant (TASK-005 Round 2: Point 1)', async () => {
+      const dbMock = (service as unknown as { db: { query: Record<string, { findFirst: jest.Mock }> } }).db;
+      jest.spyOn(dbMock.query.tenants, 'findFirst').mockResolvedValue({
+        id: 't-1',
+        code: 'demo_fnb',
+        status: 'active',
+      });
+      jest.spyOn(dbMock.query.featureDefinitions, 'findFirst').mockResolvedValue({
+        key: 'pos.devices',
+        implementationStatus: 'available',
+        platformEnabled: true,
+        defaultEnabled: true,
+      });
+      // Tenant explicitly disabled pos.devices
+      jest.spyOn(dbMock.query.tenantFeatures, 'findFirst').mockResolvedValue({
+        tenantId: 't-1',
+        featureKey: 'pos.devices',
+        enabled: false,
+      });
+
+      await expect(
+        service.createPairingCode({ sub: 'user-1', tid: 'demo_fnb', mid: 'm-1' }, 'main', 'POS 1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('Dummy Hash Validity (TASK-005 Round 2: Point 2)', () => {
+    it('initializes dummyPinHash as a valid argon2id hash', async () => {
+      const hash = service.getDummyPinHash();
+      expect(hash).toMatch(/^\$argon2id\$v=19\$/);
+      const valid = await verifyPassword(hash, 'timing-defense-dummy-pin-000000');
+      expect(valid).toBe(true);
+      const invalid = await verifyPassword(hash, 'wrong-pin');
+      expect(invalid).toBe(false);
+    });
+  });
+
+  describe('Inactive Account Handling (TASK-005 Round 2: Point 3)', () => {
+    it('rejects PIN login with 401 INVALID_PIN when account status is not active', async () => {
+      const dbMock = (service as unknown as { db: { query: Record<string, { findFirst: jest.Mock }> } }).db;
+      jest.spyOn(service, 'authenticateDevice').mockResolvedValue({
+        device: { id: 'd-1', tenantId: 't-1', branchId: 'b-1', status: 'active' } as unknown as typeof schema.posDevices.$inferSelect,
+        tenant: { id: 't-1', code: 'demo_fnb', status: 'active' } as unknown as typeof schema.tenants.$inferSelect,
+        branch: { id: 'b-1', code: 'main', status: 'active' } as unknown as typeof schema.branches.$inferSelect,
+      });
+      jest.spyOn(dbMock.query.memberships, 'findFirst').mockResolvedValue({
+        id: 'm-1',
+        tenantId: 't-1',
+        accountId: 'acc-1',
+        status: 'active',
+        branchScope: [],
+      });
+      // Account is disabled
+      jest.spyOn(dbMock.query.accounts, 'findFirst').mockResolvedValue({
+        id: 'acc-1',
+        status: 'disabled',
+      });
+
+      await expect(
+        service.loginWithPin('Device mock_token', 'm-1', '123456'),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 

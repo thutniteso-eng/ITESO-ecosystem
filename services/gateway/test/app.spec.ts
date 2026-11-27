@@ -1,4 +1,4 @@
-import { Controller, Get, INestApplication } from '@nestjs/common';
+import { Controller, Get, INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import * as crypto from 'crypto';
@@ -108,6 +108,14 @@ describe('Gateway endpoints (TASK-003)', () => {
     jwtVerifier = moduleRef.get(JwtVerifierService);
 
     jwtVerifier.setPublicKey(testPublicKey);
+    jest.spyOn(platformService, 'getActiveTenant').mockResolvedValue({
+      id: '11111111-1111-1111-1111-111111111111',
+      code: 'demo_fnb',
+      dbName: 't_demo_fnb',
+      displayName: 'Demo FnB',
+      status: 'active',
+      industries: ['fnb'],
+    });
   });
 
   afterEach(async () => {
@@ -314,6 +322,85 @@ describe('Gateway endpoints (TASK-003)', () => {
         .expect(200);
 
       expect(res.body.tenant).toBe('demo_fnb');
+    });
+
+    it('returns 403 TENANT_MISMATCH when device tenant does not match token tenant (TASK-005 Round 2: Point 5)', async () => {
+      const deviceVerifier = app.get(DeviceVerificationService);
+      jest.spyOn(deviceVerifier, 'verifyDeviceActive').mockResolvedValueOnce({
+        id: 'dev-other-tenant',
+        tenantId: 'other-tenant-uuid', // Differs from demo_fnb tenant id '11111111-1111-1111-1111-111111111111'
+        branchId: 'b-1',
+        status: 'active',
+        cachedAt: Date.now(),
+      });
+
+      const pinToken = await createToken({
+        sub: 'cashier-1',
+        tid: 'demo_fnb',
+        mid: 'mem-1',
+        did: 'dev-other-tenant',
+        roles: ['Chủ'],
+        perms: ['system.diagnostics.view'],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/v1/odoo/version')
+        .set('Authorization', `Bearer ${pinToken}`)
+        .expect(403);
+
+      expect(res.body.error).toBe('TENANT_MISMATCH');
+      expect(res.body.message).toContain('Device does not belong to token tenant');
+    });
+
+    it('returns 403 BRANCH_MISMATCH when token bid does not match device branch', async () => {
+      const deviceVerifier = app.get(DeviceVerificationService);
+      jest.spyOn(deviceVerifier, 'verifyDeviceActive').mockResolvedValueOnce({
+        id: 'dev-1',
+        tenantId: '11111111-1111-1111-1111-111111111111',
+        branchId: 'branch-correct',
+        status: 'active',
+        cachedAt: Date.now(),
+      });
+
+      const pinToken = await createToken({
+        sub: 'cashier-1',
+        tid: 'demo_fnb',
+        mid: 'mem-1',
+        did: 'dev-1',
+        bid: 'branch-wrong', // Mismatch!
+        roles: ['Chủ'],
+        perms: ['system.diagnostics.view'],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/v1/odoo/version')
+        .set('Authorization', `Bearer ${pinToken}`)
+        .expect(403);
+
+      expect(res.body.error).toBe('BRANCH_MISMATCH');
+    });
+
+    it('returns 401 DEVICE_REVOKED when device is revoked in pos_devices', async () => {
+      const deviceVerifier = app.get(DeviceVerificationService);
+      jest.spyOn(deviceVerifier, 'verifyDeviceActive').mockRejectedValueOnce(
+        new UnauthorizedException({ error: 'DEVICE_REVOKED', message: 'Device revoked' }),
+      );
+
+      const pinToken = await createToken({
+        sub: 'cashier-1',
+        tid: 'demo_fnb',
+        mid: 'mem-1',
+        did: 'dev-revoked',
+        roles: ['Chủ'],
+        perms: ['system.diagnostics.view'],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/v1/odoo/version')
+        .set('Authorization', `Bearer ${pinToken}`)
+        .expect(401);
+
+      expect(res.body.error).toBe('DEVICE_REVOKED');
     });
   });
 

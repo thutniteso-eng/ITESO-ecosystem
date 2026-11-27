@@ -548,6 +548,249 @@ async function run() {
 
   console.log('✓ Criterion 9 PASS: Prior tasks criteria, backlog items, and database isolation intact.\n');
 
+  // Small delay to ensure DB connections settled
+  await new Promise(r => setTimeout(r, 1000));
+
+  // ---------------------------------------------------------------------------
+  // TASK-005 ROUND 2 VERIFICATIONS (5 Mandated Fixes)
+  // ---------------------------------------------------------------------------
+  console.log('--- TASK-005 Round 2: Verifying 5 Mandated Fixes ---');
+
+  // Point 4: Branch scope restriction on pairing code creation
+  console.log('R2.4: Testing branch_scope restriction on pairing code creation...');
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE memberships SET branch_scope = ARRAY['other_branch'] WHERE id = '${ownerMid}';"`,
+    { cwd: projectRoot },
+  );
+  const forbiddenBranchRes = await fetch(`${GATEWAY_URL}/v1/pos/pairing-codes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ownerLogin.access_token}`,
+    },
+    body: JSON.stringify({ branch_code: 'main', device_name: 'POS Quầy Test Scope' }),
+  });
+  assert(forbiddenBranchRes.status === 403, `Pairing code with forbidden branch_scope returned 403 (got ${forbiddenBranchRes.status})`);
+  const forbiddenBranchBody = await forbiddenBranchRes.json();
+  assert(forbiddenBranchBody.error === 'BRANCH_FORBIDDEN', `Error is BRANCH_FORBIDDEN (got ${forbiddenBranchBody.error})`);
+
+  // Restore owner branch_scope
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE memberships SET branch_scope = '{}' WHERE id = '${ownerMid}';"`,
+    { cwd: projectRoot },
+  );
+  console.log('✓ R2.4 PASS: branch_scope check strictly enforced (403 BRANCH_FORBIDDEN).');
+
+  // Point 3: Inactive account handling
+  console.log('R2.3: Testing inactive account rejection on PIN login...');
+  const r2PairCodeRes = await fetch(`${GATEWAY_URL}/v1/pos/pairing-codes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ownerLogin.access_token}`,
+    },
+    body: JSON.stringify({ branch_code: 'main', device_name: 'POS Quầy R2' }),
+  });
+  const r2PairCodeData = await r2PairCodeRes.json();
+  const r2PairDeviceRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: r2PairCodeData.pairing_code }),
+  });
+  const r2Device = await r2PairDeviceRes.json();
+  const r2DeviceToken = r2Device.device_token;
+
+  // Deactivate owner account
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE accounts SET status = 'disabled' WHERE email = 'owner@demo.local';"`,
+    { cwd: projectRoot },
+  );
+  const inactiveAccLoginRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Device ${r2DeviceToken}`,
+    },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(inactiveAccLoginRes.status === 401, `Inactive account login rejected with 401 (got ${inactiveAccLoginRes.status})`);
+  const inactiveAccBody = await inactiveAccLoginRes.json();
+  assert(inactiveAccBody.error === 'INVALID_PIN', `Error is INVALID_PIN for disabled account (got ${inactiveAccBody.error})`);
+
+  // Reactivate owner account
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE accounts SET status = 'active' WHERE email = 'owner@demo.local';"`,
+    { cwd: projectRoot },
+  );
+  console.log('✓ R2.3 PASS: Disabled account rejected with 401 INVALID_PIN.');
+
+  // Point 5: Gateway checks device belongs to token tenant
+  console.log('R2.5: Testing Gateway TENANT_MISMATCH check when device belongs to another tenant...');
+  const r2PinLoginRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Device ${r2DeviceToken}`,
+    },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(r2PinLoginRes.status === 200, 'PIN login on r2Device succeeded');
+  const r2PinData = await r2PinLoginRes.json();
+
+  const demoFnb2Id = execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -tAc "SELECT id FROM tenants WHERE code = 'demo_fnb2';"`,
+    { cwd: projectRoot },
+  ).toString().trim();
+  const demoFnbId = execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -tAc "SELECT id FROM tenants WHERE code = 'demo_fnb';"`,
+    { cwd: projectRoot },
+  ).toString().trim();
+
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE pos_devices SET tenant_id = '${demoFnb2Id}' WHERE id = '${r2Device.device_id}';"`,
+    { cwd: projectRoot },
+  );
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node -e '
+      const { connect } = require("nats");
+      connect({ servers: "nats://nats:4222" }).then(async nc => {
+        nc.publish("platform.devices.changed", Buffer.from(JSON.stringify({ device_id: "${r2Device.device_id}", tenant_id: "${demoFnb2Id}" })));
+        await nc.flush();
+        await nc.close();
+      });
+    '`,
+    { cwd: projectRoot },
+  );
+  await new Promise(r => setTimeout(r, 600));
+
+  const mismatchTenantRes = await fetch(`${GATEWAY_URL}/v1/odoo/version`, {
+    headers: { Authorization: `Bearer ${r2PinData.access_token}` },
+  });
+  assert(mismatchTenantRes.status === 403, `Device tenant mismatch returned 403 (got ${mismatchTenantRes.status})`);
+  const mismatchTenantBody = await mismatchTenantRes.json();
+  assert(mismatchTenantBody.error === 'TENANT_MISMATCH', `Error is TENANT_MISMATCH (got ${mismatchTenantBody.error})`);
+
+  // Restore device tenant
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "UPDATE pos_devices SET tenant_id = '${demoFnbId}' WHERE id = '${r2Device.device_id}';"`,
+    { cwd: projectRoot },
+  );
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T control-plane node -e '
+      const { connect } = require("nats");
+      connect({ servers: "nats://nats:4222" }).then(async nc => {
+        nc.publish("platform.devices.changed", Buffer.from(JSON.stringify({ device_id: "${r2Device.device_id}", tenant_id: "${demoFnbId}" })));
+        await nc.flush();
+        await nc.close();
+      });
+    '`,
+    { cwd: projectRoot },
+  );
+  await new Promise(r => setTimeout(r, 600));
+  console.log('✓ R2.5 PASS: Gateway TENANT_MISMATCH strictly enforced for device tokens.');
+
+  // Point 1: Tenant-level pos.devices feature flag blocks all 4 POS routes
+  console.log('R2.1: Testing tenant-level pos.devices flag blocks all 4 POS routes...');
+  const r2CodeRes = await fetch(`${GATEWAY_URL}/v1/pos/pairing-codes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerLogin.access_token}` },
+    body: JSON.stringify({ branch_code: 'main', device_name: 'POS Temp' }),
+  });
+  const r2CodeData = await r2CodeRes.json();
+
+  const prePinRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${r2DeviceToken}` },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(prePinRes.status === 200, 'Pre-disable PIN login succeeded (200)');
+  const prePinData = await prePinRes.json();
+
+  const preRefreshRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${r2DeviceToken}` },
+    body: JSON.stringify({ refresh_token: prePinData.refresh_token }),
+  });
+  assert(preRefreshRes.status === 200, 'Pre-disable PIN refresh succeeded (200)');
+
+  const preRosterRes = await fetch(`${GATEWAY_URL}/v1/pos/roster`, {
+    headers: { Authorization: `Device ${r2DeviceToken}` },
+  });
+  assert(preRosterRes.status === 200, 'Pre-disable roster succeeded (200)');
+
+  // Now DISABLE pos.devices for demo_fnb
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "
+      INSERT INTO tenant_features (tenant_id, feature_key, enabled, updated_by)
+      VALUES ('${demoFnbId}', 'pos.devices', false, 'admin')
+      ON CONFLICT (tenant_id, feature_key) DO UPDATE SET enabled = false;
+    "`,
+    { cwd: projectRoot },
+  );
+
+  // Test 1: POST /v1/pos/devices/pair -> MUST BE 403 FEATURE_DISABLED
+  const disPairRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: r2CodeData.pairing_code }),
+  });
+  assert(disPairRes.status === 403, `Disabled pair returned 403 (got ${disPairRes.status})`);
+  const disPairBody = await disPairRes.json();
+  assert(disPairBody.error === 'FEATURE_DISABLED', `Pair error is FEATURE_DISABLED (got ${disPairBody.error})`);
+
+  // Test 2: POST /v1/pos/auth/pin -> MUST BE 403 FEATURE_DISABLED
+  const disPinRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${r2DeviceToken}` },
+    body: JSON.stringify({ membership_id: ownerMid, pin: '135792' }),
+  });
+  assert(disPinRes.status === 403, `Disabled PIN login returned 403 (got ${disPinRes.status})`);
+  const disPinBody = await disPinRes.json();
+  assert(disPinBody.error === 'FEATURE_DISABLED', `PIN error is FEATURE_DISABLED (got ${disPinBody.error})`);
+
+  // Test 3: POST /v1/pos/auth/refresh -> MUST BE 403 FEATURE_DISABLED
+  const disRefreshRes = await fetch(`${GATEWAY_URL}/v1/pos/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Device ${r2DeviceToken}` },
+    body: JSON.stringify({ refresh_token: prePinData.refresh_token }),
+  });
+  assert(disRefreshRes.status === 403, `Disabled refresh returned 403 (got ${disRefreshRes.status})`);
+  const disRefreshBody = await disRefreshRes.json();
+  assert(disRefreshBody.error === 'FEATURE_DISABLED', `Refresh error is FEATURE_DISABLED (got ${disRefreshBody.error})`);
+
+  // Test 4: GET /v1/pos/roster -> MUST BE 403 FEATURE_DISABLED
+  const disRosterRes = await fetch(`${GATEWAY_URL}/v1/pos/roster`, {
+    headers: { Authorization: `Device ${r2DeviceToken}` },
+  });
+  assert(disRosterRes.status === 403, `Disabled roster returned 403 (got ${disRosterRes.status})`);
+  const disRosterBody = await disRosterRes.json();
+  assert(disRosterBody.error === 'FEATURE_DISABLED', `Roster error is FEATURE_DISABLED (got ${disRosterBody.error})`);
+
+  console.log('✓ R2.1 (All 4 routes returned 403 FEATURE_DISABLED when pos.devices is disabled for tenant).');
+
+  // Re-enable pos.devices for demo_fnb
+  execSync(
+    `docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres psql -U iteso_control_plane -d platform -c "
+      UPDATE tenant_features SET enabled = true WHERE tenant_id = '${demoFnbId}' AND feature_key = 'pos.devices';
+    "`,
+    { cwd: projectRoot },
+  );
+
+  // Verify routes work normally again after re-enabling
+  const rePairRes = await fetch(`${GATEWAY_URL}/v1/pos/devices/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pairing_code: r2CodeData.pairing_code }),
+  });
+  assert(rePairRes.status === 200, `Re-enabled pair returned 200 (got ${rePairRes.status})`);
+
+  const reRosterRes = await fetch(`${GATEWAY_URL}/v1/pos/roster`, {
+    headers: { Authorization: `Device ${r2DeviceToken}` },
+  });
+  assert(reRosterRes.status === 200, `Re-enabled roster returned 200 (got ${reRosterRes.status})`);
+
+  console.log('✓ R2.1 PASS: All 4 POS routes blocked when tenant feature is disabled and unblocked when re-enabled.\n');
+
   // ---------------------------------------------------------------------------
   // CRITERION 10: Git history check for secrets
   // ---------------------------------------------------------------------------
