@@ -43,43 +43,60 @@ fi
 # Secure tenant DB using shared helper script
 "$ROOT_DIR/scripts/lib/secure-tenant-db.sh" "$TENANT_DB"
 
-echo "[init-demo-tenant] Updating admin password and dev JSON-2 API key on '$TENANT_DB'..."
+echo "[init-demo-tenant] Updating admin password, configuring iteso_system and registering system API key on '$TENANT_DB'..."
+# Generate raw API key directly in odoo shell and pipe it directly to register-tenant-system-key.js
+# The raw key is NOT printed to stdout, logged or saved to any file.
 compose exec -T \
   -e ODOO_DEMO_ADMIN_PASSWORD="$DEMO_ADMIN_PASS" \
-  -e ODOO_DEV_API_KEY="${ODOO_DEV_API_KEY:-}" \
   odoo odoo shell \
   -c /tmp/odoo.conf \
   -d "$TENANT_DB" \
-  --no-http <<'PYEOF'
+  --no-http <<'PYEOF' | compose exec -T control-plane node dist/cli/register-tenant-system-key.js --tenant "${DEMO_TENANT_CODE:-demo_fnb}"
 import os
-from odoo.addons.base.models.res_users import KEY_CRYPT_CONTEXT, INDEX_SIZE
+import sys
 
+# 1. Update admin password
 admin_user = env.ref("base.user_admin").sudo()
 admin_user.password = os.environ["ODOO_DEMO_ADMIN_PASSWORD"]
 
-raw_key = os.environ.get("ODOO_DEV_API_KEY", "")
-if raw_key:
-    key_name = "iteso-gateway-dev"
-    env.cr.execute(
-        "DELETE FROM res_users_apikeys WHERE user_id = %s AND name = %s",
-        (admin_user.id, key_name),
-    )
-    env.cr.execute(
-        """
-        INSERT INTO res_users_apikeys (name, user_id, scope, expiration_date, key, index)
-        VALUES (%s, %s, %s, NULL, %s, %s)
-        """,
-        (
-            key_name,
-            admin_user.id,
-            "rpc",
-            KEY_CRYPT_CONTEXT.hash(raw_key),
-            raw_key[:INDEX_SIZE],
-        ),
-    )
+# Clean up any legacy iteso-gateway-dev keys
+env.cr.execute("DELETE FROM res_users_apikeys WHERE name = %s", ("iteso-gateway-dev",))
+
+# 2. Create or find iteso_system user
+group_system = env.ref("base.group_system")
+Users = env["res.users"].sudo()
+system_user = Users.search([("login", "=", "iteso_system")], limit=1)
+if not system_user:
+    system_user = Users.create({
+        "name": "ITESO System Service",
+        "login": "iteso_system",
+        "email": "system@iteso.local",
+        "active": True,
+        "group_ids": [(6, 0, [group_system.id])],
+    })
+else:
+    system_user.write({
+        "active": True,
+        "group_ids": [(6, 0, [group_system.id])],
+    })
+
+# Remove existing iteso-system keys for fresh key generation
+env.cr.execute(
+    "DELETE FROM res_users_apikeys WHERE user_id = %s AND name = %s",
+    (system_user.id, "iteso-system"),
+)
+
+# 3. Generate system API key via Odoo 20 standard API (system user has no expiration limit: pass expiration_date=None)
+raw_key = env["res.users.apikeys"].with_user(system_user).sudo()._generate(
+    scope="rpc",
+    name="iteso-system",
+    expiration_date=None,
+)
 
 env.cr.commit()
-print("Admin password updated and dev API key ready for user:", admin_user.login)
+
+# Output raw key to stdout for pipe to stdin of register-tenant-system-key CLI
+sys.stdout.write(raw_key)
 PYEOF
 
 echo "[init-demo-tenant] Done."

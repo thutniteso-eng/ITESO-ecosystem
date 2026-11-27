@@ -284,6 +284,7 @@ describe('Control Plane Endpoints (TASK-003)', () => {
             memberships: { findFirst: () => Promise<unknown> };
             tenants: { findFirst: () => Promise<unknown> };
           };
+          update: (table: unknown) => unknown;
           transaction: (cb: (tx: MockTx) => Promise<unknown>) => Promise<unknown>;
         };
         getMembershipRolesAndPerms: () => Promise<{ roles: string[]; perms: string[] }>;
@@ -294,6 +295,12 @@ describe('Control Plane Endpoints (TASK-003)', () => {
       jest.spyOn(internalAuth.db.query.memberships, 'findFirst').mockResolvedValue({ id: 'mem-1', tenantId: 't-1', status: 'active' });
       jest.spyOn(internalAuth.db.query.tenants, 'findFirst').mockResolvedValue({ id: 't-1', code: 'demo_fnb', status: 'active' });
       jest.spyOn(internalAuth, 'getMembershipRolesAndPerms').mockResolvedValue({ roles: ['Chủ'], perms: [] });
+
+      jest.spyOn(internalAuth.db, 'update').mockImplementation(() => ({
+        set: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      } as unknown as ReturnType<typeof internalAuth.db.update>));
 
       jest.spyOn(internalAuth.db, 'transaction').mockImplementation(async (callback) => {
         const fakeTx: MockTx = {

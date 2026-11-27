@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as jose from 'jose';
 import { AppModule } from '../src/app.module';
 import { GatewayNatsListener } from '../src/features/gateway-nats.listener';
+import { OdooCredentialService } from '../src/odoo/odoo-credential.service';
 import { PlatformService } from '../src/features/platform.service';
 import { HealthService } from '../src/health/health.service';
 import { OdooService } from '../src/odoo/odoo.service';
@@ -74,6 +75,13 @@ describe('Gateway endpoints (TASK-003)', () => {
       .useValue({
         onModuleInit: jest.fn(),
         onModuleDestroy: jest.fn(),
+      })
+      .overrideProvider(OdooCredentialService)
+      .useValue({
+        onModuleInit: jest.fn(),
+        onModuleDestroy: jest.fn(),
+        getMemberCredential: jest.fn(),
+        evictCache: jest.fn(),
       })
       .compile();
 

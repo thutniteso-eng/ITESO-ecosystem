@@ -6,7 +6,7 @@ import { OdooService, type OdooVersionResponse } from './odoo.service';
 
 interface RequestWithTenant extends Request {
   tenantCode?: string;
-  user?: { tid?: string };
+  user?: { tid?: string; mid?: string };
 }
 
 @Controller('v1/odoo')
@@ -18,6 +18,7 @@ export class OdooController {
   @RequirePermission('system.diagnostics.view')
   async getVersion(@Req() req: RequestWithTenant): Promise<OdooVersionResponse> {
     const tenantCode = req.tenantCode || req.user?.tid;
-    return this.odooService.getVersionForTenant(tenantCode!);
+    const membershipId = req.user?.mid;
+    return this.odooService.getVersionForTenant(tenantCode, membershipId);
   }
 }

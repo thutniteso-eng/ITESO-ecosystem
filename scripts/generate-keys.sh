@@ -10,6 +10,7 @@ mkdir -p "${SECRETS_DIR}"
 PRIV_KEY="${SECRETS_DIR}/ed25519_private.pem"
 PUB_KEY="${SECRETS_DIR}/ed25519_public.pem"
 ENC_KEY="${SECRETS_DIR}/platform_encryption.key"
+ODOO_CREDS_KEY="${SECRETS_DIR}/odoo_credentials.key"
 
 if [ ! -f "${PRIV_KEY}" ] || [ ! -f "${PUB_KEY}" ]; then
   echo "[generate-keys] Generating Ed25519 keypair in ${SECRETS_DIR}..."
@@ -28,18 +29,27 @@ else
   echo "[generate-keys] Encryption key already exists."
 fi
 
+if [ ! -f "${ODOO_CREDS_KEY}" ]; then
+  echo "[generate-keys] Generating 32-byte AES-256 Odoo credentials key in ${ODOO_CREDS_KEY}..."
+  openssl rand -base64 32 | tr -d '\r\n' > "${ODOO_CREDS_KEY}"
+  echo "[generate-keys] Odoo credentials key generated successfully."
+else
+  echo "[generate-keys] Odoo credentials key already exists."
+fi
+
 # Ensure strict permissions: chmod 600 for private and symmetric keys, 644 for public key
 chmod 600 "${PRIV_KEY}"
 chmod 600 "${ENC_KEY}"
+chmod 600 "${ODOO_CREDS_KEY}"
 chmod 644 "${PUB_KEY}"
 
 # If running on an environment where the current user is not UID 1000 (e.g. CI runner UID 1001),
 # adjust ownership to 1000:1000 so the container user 'node' (UID 1000) can read them with chmod 600
 if [ "$(id -u)" != "1000" ]; then
   if command -v sudo >/dev/null 2>&1; then
-    sudo chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${PUB_KEY}" 2>/dev/null || true
+    sudo chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${PUB_KEY}" 2>/dev/null || true
   else
-    chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${PUB_KEY}" 2>/dev/null || true
+    chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${PUB_KEY}" 2>/dev/null || true
   fi
 fi
 

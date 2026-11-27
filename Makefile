@@ -16,6 +16,7 @@ up:
 	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
+	$(COMPOSE) exec -T control-plane node dist/cli/provision-odoo-users.js --tenant demo_fnb
 
 down:
 	$(COMPOSE) down
@@ -34,6 +35,7 @@ reset:
 	$(COMPOSE) run --rm control-plane node dist/db/seed.js
 	$(COMPOSE) up -d --build --wait
 	./scripts/init-demo-tenant.sh
+	$(COMPOSE) exec -T control-plane node dist/cli/provision-odoo-users.js --tenant demo_fnb
 
 seed:
 	@echo "Dữ liệu nhà hàng mẫu sẽ có ở task sau."

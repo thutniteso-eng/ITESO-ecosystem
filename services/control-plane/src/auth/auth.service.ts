@@ -78,23 +78,15 @@ export class AuthService implements OnModuleInit {
           throw new Error(`Decoded length is ${decoded.length}, expected 32 bytes.`);
         }
       } catch (err: unknown) {
-        if (process.env.NODE_ENV === 'test') {
-          this.encryptionKey = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
-        } else {
-          const msg = err instanceof Error ? err.message : String(err);
-          throw new Error(
-            `FATAL: Invalid platform encryption key: ${msg}. Key must be 32 bytes base64 encoded.`,
-          );
-        }
-      }
-    } else {
-      if (process.env.NODE_ENV === 'test') {
-        this.encryptionKey = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=';
-      } else {
+        const msg = err instanceof Error ? err.message : String(err);
         throw new Error(
-          `FATAL: Platform encryption key not found at ${keyPath} or via PLATFORM_ENCRYPTION_KEY.`,
+          `FATAL: Invalid platform encryption key: ${msg}. Key must be 32 bytes base64 encoded.`,
         );
       }
+    } else {
+      throw new Error(
+        `FATAL: Platform encryption key not found at ${keyPath} or via PLATFORM_ENCRYPTION_KEY.`,
+      );
     }
   }
 
@@ -107,7 +99,11 @@ export class AuthService implements OnModuleInit {
     this.dummyHash = await hashPassword('timing-defense-dummy-password-value-xyz');
   }
 
-  async login(identifier?: string, password?: string): Promise<LoginResult> {
+  async login(
+    identifier?: string,
+    password?: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<LoginResult> {
     if (!identifier || typeof identifier !== 'string' || !password || typeof password !== 'string') {
       throw new BadRequestException({
         error: 'BAD_REQUEST',
@@ -234,10 +230,19 @@ export class AuthService implements OnModuleInit {
 
     // Exactly 1 membership
     const chosenMembership = memberships[0];
-    return this.issueTokensForMembership(account, chosenMembership.membershipId, chosenMembership.tenantCode);
+    return this.issueTokensForMembership(
+      account,
+      chosenMembership.membershipId,
+      chosenMembership.tenantCode,
+      meta,
+    );
   }
 
-  async selectTenant(selectionToken?: string, tenantCode?: string): Promise<LoginResultTokens> {
+  async selectTenant(
+    selectionToken?: string,
+    tenantCode?: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<LoginResultTokens> {
     if (!selectionToken || !tenantCode) {
       throw new BadRequestException({
         error: 'BAD_REQUEST',
@@ -277,10 +282,14 @@ export class AuthService implements OnModuleInit {
       });
     }
 
-    return this.issueTokensForMembership(account, chosen.membershipId, chosen.tenantCode);
+    return this.issueTokensForMembership(account, chosen.membershipId, chosen.tenantCode, meta);
   }
 
-  async verifyTotpAndLogin(challengeToken?: string, code?: string): Promise<LoginResultTokens> {
+  async verifyTotpAndLogin(
+    challengeToken?: string,
+    code?: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<LoginResultTokens> {
     if (!challengeToken || !code) {
       throw new BadRequestException({
         error: 'BAD_REQUEST',
@@ -318,14 +327,31 @@ export class AuthService implements OnModuleInit {
     }
 
     const totpSecret = decryptAesGcm(account.totpSecretEnc, this.encryptionKey);
-    const valid = verifyTotp(code.trim(), totpSecret);
+    const validStep = verifyTotp(code.trim(), totpSecret);
 
-    if (!valid) {
+    if (validStep === false) {
       throw new UnauthorizedException({
         error: 'INVALID_TOTP_CODE',
         message: 'Invalid or expired TOTP code',
       });
     }
+
+    // Check single-use time-step tracking
+    if (account.lastTotpStep && BigInt(account.lastTotpStep) >= BigInt(validStep)) {
+      throw new UnauthorizedException({
+        error: 'TOTP_CODE_ALREADY_USED',
+        message: 'This TOTP code has already been used. Please wait for the next time-step.',
+      });
+    }
+
+    // Record last used time-step
+    await this.db
+      .update(schema.accounts)
+      .set({
+        lastTotpStep: String(validStep),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.accounts.id, account.id));
 
     // Issue platform admin token
     const accessTokenPayload: AccessTokenPayload = {
@@ -351,6 +377,8 @@ export class AuthService implements OnModuleInit {
       tokenHash,
       sessionStartedAt: now,
       expiresAt,
+      ip: meta?.ip,
+      userAgent: meta?.userAgent,
     });
 
     return {
@@ -361,7 +389,10 @@ export class AuthService implements OnModuleInit {
     };
   }
 
-  async refresh(rawRefreshToken?: string): Promise<LoginResultTokens> {
+  async refresh(
+    rawRefreshToken?: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<LoginResultTokens> {
     if (!rawRefreshToken || typeof rawRefreshToken !== 'string') {
       throw new BadRequestException({
         error: 'BAD_REQUEST',
@@ -500,36 +531,48 @@ export class AuthService implements OnModuleInit {
     }
 
     // Rotate token atomically in transaction to prevent race conditions
-    await this.db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(schema.refreshTokens)
-        .values({
-          accountId: account.id,
-          membershipId: tokenRecord.membershipId,
-          familyId: tokenRecord.familyId,
-          tokenHash: newTokenHash,
-          sessionStartedAt: tokenRecord.sessionStartedAt,
-          expiresAt: newExpiresAt,
-        })
-        .returning({ id: schema.refreshTokens.id });
+    let reuseDetected = false;
+    try {
+      await this.db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(schema.refreshTokens)
+          .values({
+            accountId: account.id,
+            membershipId: tokenRecord.membershipId,
+            familyId: tokenRecord.familyId,
+            tokenHash: newTokenHash,
+            sessionStartedAt: tokenRecord.sessionStartedAt,
+            expiresAt: newExpiresAt,
+            ip: meta?.ip,
+            userAgent: meta?.userAgent,
+          })
+          .returning({ id: schema.refreshTokens.id });
 
-      const revokedOld = await tx
-        .update(schema.refreshTokens)
-        .set({
-          revokedAt: new Date(),
-          replacedBy: inserted.id,
-        })
-        .where(
-          and(
-            eq(schema.refreshTokens.id, tokenRecord.id),
-            sql`${schema.refreshTokens.revokedAt} IS NULL`,
-          ),
-        )
-        .returning({ id: schema.refreshTokens.id });
+        const revokedOld = await tx
+          .update(schema.refreshTokens)
+          .set({
+            revokedAt: new Date(),
+            replacedBy: inserted.id,
+          })
+          .where(
+            and(
+              eq(schema.refreshTokens.id, tokenRecord.id),
+              sql`${schema.refreshTokens.revokedAt} IS NULL`,
+            ),
+          )
+          .returning({ id: schema.refreshTokens.id });
 
-      if (revokedOld.length === 0) {
-        // Concurrently rotated! Revoke whole family!
-        await tx
+        if (revokedOld.length === 0) {
+          // Concurrently rotated! Mark flag and abort tx
+          reuseDetected = true;
+          throw new Error('CONCURRENT_ROTATION_ABORT');
+        }
+      });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (reuseDetected || errMsg === 'CONCURRENT_ROTATION_ABORT') {
+        // Revoke whole family in a separate, committed transaction!
+        await this.db
           .update(schema.refreshTokens)
           .set({ revokedAt: new Date() })
           .where(eq(schema.refreshTokens.familyId, tokenRecord.familyId));
@@ -539,7 +582,8 @@ export class AuthService implements OnModuleInit {
           message: 'Refresh token reuse detected. All tokens revoked.',
         });
       }
-    });
+      throw err;
+    }
 
     return {
       access_token: newAccessToken,
@@ -663,6 +707,7 @@ export class AuthService implements OnModuleInit {
     account: typeof schema.accounts.$inferSelect,
     membershipId: string,
     tenantCode: string,
+    meta?: { ip?: string; userAgent?: string },
   ): Promise<LoginResultTokens> {
     const { roles, perms } = await this.getMembershipRolesAndPerms(membershipId);
 
@@ -690,6 +735,8 @@ export class AuthService implements OnModuleInit {
       tokenHash,
       sessionStartedAt: now,
       expiresAt,
+      ip: meta?.ip,
+      userAgent: meta?.userAgent,
     });
 
     return {

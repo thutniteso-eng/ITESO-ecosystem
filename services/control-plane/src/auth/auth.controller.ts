@@ -20,26 +20,46 @@ export class AuthController {
 
   @Post('auth/login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() body: { identifier?: string; login?: string; password?: string }) {
-    return this.authService.login(body?.identifier || body?.login, body?.password);
+  async login(
+    @Body() body: { identifier?: string; login?: string; password?: string },
+    @Headers('x-forwarded-for') xForwardedFor?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    const ip = xForwardedFor ? xForwardedFor.split(',')[0].trim() : undefined;
+    return this.authService.login(body?.identifier || body?.login, body?.password, { ip, userAgent });
   }
 
   @Post('auth/select-tenant')
   @HttpCode(HttpStatus.OK)
-  async selectTenant(@Body() body: { selection_token?: string; tenant?: string; tenant_code?: string }) {
-    return this.authService.selectTenant(body?.selection_token, body?.tenant || body?.tenant_code);
+  async selectTenant(
+    @Body() body: { selection_token?: string; tenant?: string; tenant_code?: string },
+    @Headers('x-forwarded-for') xForwardedFor?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    const ip = xForwardedFor ? xForwardedFor.split(',')[0].trim() : undefined;
+    return this.authService.selectTenant(body?.selection_token, body?.tenant || body?.tenant_code, { ip, userAgent });
   }
 
   @Post('auth/totp')
   @HttpCode(HttpStatus.OK)
-  async verifyTotp(@Body() body: { challenge_token?: string; code?: string }) {
-    return this.authService.verifyTotpAndLogin(body?.challenge_token, body?.code);
+  async verifyTotp(
+    @Body() body: { challenge_token?: string; code?: string },
+    @Headers('x-forwarded-for') xForwardedFor?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    const ip = xForwardedFor ? xForwardedFor.split(',')[0].trim() : undefined;
+    return this.authService.verifyTotpAndLogin(body?.challenge_token, body?.code, { ip, userAgent });
   }
 
   @Post('auth/refresh')
   @HttpCode(HttpStatus.OK)
-  async refresh(@Body() body: { refresh_token?: string }) {
-    return this.authService.refresh(body?.refresh_token);
+  async refresh(
+    @Body() body: { refresh_token?: string },
+    @Headers('x-forwarded-for') xForwardedFor?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    const ip = xForwardedFor ? xForwardedFor.split(',')[0].trim() : undefined;
+    return this.authService.refresh(body?.refresh_token, { ip, userAgent });
   }
 
   @Post('auth/logout')
