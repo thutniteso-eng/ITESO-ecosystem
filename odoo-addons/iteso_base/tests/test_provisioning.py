@@ -129,3 +129,31 @@ class TestItesoProvisioning(TransactionCase):
 
         keys = self.env["res.users.apikeys"].search([("user_id", "=", uid), ("name", "=", "iteso-gateway")])
         self.assertEqual(len(keys), 0)
+
+    def test_06_restricted_to_member_users_only(self):
+        """issue_member_key, revoke_member_keys, and disable_member only accept iteso-* logins."""
+        admin_user = self.env.ref("base.user_admin")
+
+        # 1. Calling on admin user (login 'admin') -> AccessError
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).issue_member_key(admin_user.id)
+
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).revoke_member_keys(admin_user.id)
+
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).disable_member(admin_user.id)
+
+        # 2. Calling on iteso_system itself -> AccessError
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).issue_member_key(self.system_user.id)
+
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).revoke_member_keys(self.system_user.id)
+
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).disable_member(self.system_user.id)
+
+        # 3. Calling on regular non-member user -> AccessError
+        with self.assertRaises(AccessError):
+            self.env["iteso.provisioning"].with_user(self.system_user).issue_member_key(self.regular_user.id)

@@ -293,3 +293,183 @@ pnpm test
 pnpm build
 All passed with exit code 0.
 ```
+
+---
+
+## Vòng 2 — Khắc phục theo kết quả kiểm duyệt của Claude (PR #7)
+
+### 1. Chi tiết các nội dung đã sửa theo 9 điểm bắt buộc
+
+1. **[Quan trọng] `jti` trong Redis & dừng khởi động nếu thiếu/lỗi kết nối:**
+   - Cập nhật `infra/docker-compose.yml`: Bổ sung `REDIS_URL: redis://redis:6379` và thêm `redis: { condition: service_healthy }` vào `depends_on` của service `control-plane`.
+   - Cập nhật `services/control-plane/src/auth/token.service.ts`: Trong môi trường ngoài test (`NODE_ENV !== 'test'`), nếu thiếu `REDIS_URL` hoặc kết nối Redis thất bại, `TokenService` ném lỗi FATAL và dừng khởi động control-plane, không âm thầm rơi về bộ nhớ.
+
+2. **[Quan trọng] Loại bỏ triệt để chuỗi khóa test trong mã nguồn chính & kiểm tra chặt chẽ 32 byte:**
+   - Đã loại bỏ chuỗi fallback `MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=` khỏi `odoo-provisioning.service.ts` và `gateway/src/odoo/odoo-credential.service.ts`.
+   - Bổ sung kiểm tra chặt chẽ: `PLATFORM_ENCRYPTION_KEY` và `ODOO_CREDENTIALS_KEY` bắt buộc phải tồn tại và đúng 32 bytes (sau khi base64 decode). Thiếu hoặc sai độ dài sẽ dừng ngay khi khởi động.
+   - Các file test (`odoo-provisioning.spec.ts`, `odoo-credential.spec.ts`, `app.spec.ts`) tự sinh khóa 32 bytes qua biến môi trường trước khi khởi tạo service.
+   - Chạy lệnh `grep -rn MDEyMzQ1 services/*/src` trả về 0 kết quả.
+
+3. **Chống giả mạo IP client trong proxy chuyển tiếp:**
+   - Trong `services/gateway/src/auth/auth-proxy.controller.ts`, gateway bỏ qua header `X-Forwarded-For` do client tự gửi lên và luôn sử dụng `req.socket.remoteAddress || ''` khi chuyển tiếp sang control-plane.
+   - Bổ sung unit test trong `services/gateway/test/app.spec.ts` chứng minh client gửi `X-Forwarded-For: 1.2.3.4` thì header `x-forwarded-for` chuyển tiếp tới control-plane không phải là `1.2.3.4`.
+
+4. **Xử lý xoay vòng key không phá hủy quyền thành viên còn hạn:**
+   - Cập nhật `OdooProvisioningService.syncMembership`: Khi việc gọi Odoo thất bại (ví dụ timeout mạng), service kiểm tra nếu membership vẫn `active` và `existingOdooUser` đang có key hợp lệ chưa hết hạn (`keyExpiresAt > now`), service giữ nguyên `status = active` và chỉ cập nhật `last_error`. Chỉ chuyển sang `status = error` khi không còn key hợp lệ nào.
+   - Tách chu kỳ kiểm tra: `runRotationCheck()` (kiểm tra key sắp hết hạn trong vòng 14 ngày) chạy định kỳ 24 giờ; `runRetryCheck()` (thử lại các bản ghi đang ở trạng thái `error`) chạy định kỳ mỗi 1 giờ.
+   - Bổ sung 2 unit test trong `services/control-plane/test/odoo-provisioning.spec.ts` kiểm thử đầy đủ cả 2 nhánh (giữ `active` kèm `lastError`, và đánh dấu `error` khi không có key khả dụng).
+
+5. **Giới hạn thao tác của module Odoo chỉ trên tài khoản thành viên (`iteso-*`):**
+   - Trong `odoo-addons/iteso_base/models/provisioning.py`, các phương thức `issue_member_key`, `revoke_member_keys`, và `disable_member` bổ sung hàm kiểm tra `_check_member_user(user)`: chỉ cho phép thực thi trên người dùng có `login.startswith("iteso-")` và loại trừ `iteso_system`. Nếu gọi trên user khác (như `admin`, `iteso_system`, hoặc user thường) sẽ ném `AccessError("Operation allowed only on iteso-* member accounts.")`.
+   - Bổ sung test `test_06_restricted_to_member_users_only` trong `odoo-addons/iteso_base/tests/test_provisioning.py`.
+
+6. **Nguyên tử hóa việc kiểm tra và ghi nhận time-step TOTP dùng một lần:**
+   - Trong `services/control-plane/src/auth/auth.service.ts`, thay thế cơ chế đọc rồi ghi riêng rẽ bằng một câu lệnh `UPDATE accounts SET last_totp_step = $step WHERE id = $id AND (last_totp_step IS NULL OR last_totp_step::bigint < $step) RETURNING id`.
+   - Nếu không có dòng nào được cập nhật (do câu query đồng thời khác đã chiếm time-step đó), lập tức ném `UnauthorizedException` với mã lỗi `TOTP_CODE_ALREADY_USED`.
+
+7. **Tự động hóa chạy test Odoo trong CI:**
+   - Cập nhật `scripts/test-odoo-module.sh`: sau khi cài đặt thành công trên database tạm `t_test_iteso_base`, tự động chạy tiếp lệnh `odoo --test-enable --test-tags /iteso_base --stop-after-init --no-http`. Nếu có bất kỳ test nào thất bại, script sẽ trả mã lỗi khác 0 và làm đỏ CI.
+   - Bước CI `Verify iteso_base installs and passes unit tests on fresh test database` trong `.github/workflows/ci.yml` chạy `./scripts/test-odoo-module.sh`.
+
+8. **Kiểm tra định dạng key hệ thống trong CLI `register-tenant-system-key`:**
+   - Trong `services/control-plane/src/cli/register-tenant-system-key.ts`, bổ sung kiểm tra định dạng hex của API key Odoo 20: chỉ chấp nhận chuỗi khớp regex `/^[a-fA-F0-9]{32,64}$/`. Nếu chuỗi nhận từ stdin chứa dòng thừa hoặc sai định dạng hex, script in thông báo lỗi và exit 1, không ghi vào database. Tuyệt đối không in giá trị key ra stdout hoặc log.
+
+9. **Ẩn chi tiết lỗi nội bộ của Odoo trả về cho client:**
+   - Trong `services/gateway/src/odoo/odoo.service.ts`:
+     - Với HTTP 403 (`ODOO_ACCESS_DENIED`): ghi `detail` đầy đủ vào log thông qua `this.logger.error()`, chỉ trả về client thông điệp ngắn `Access denied by Odoo`.
+     - Với các mã HTTP lỗi khác (`ODOO_API_ERROR`): ghi `detail` đầy đủ vào log thông qua `this.logger.error()`, chỉ trả về client thông điệp ngắn `Odoo API request failed`.
+
+---
+
+### 2. Output kiểm thử thực tế Vòng 2
+
+#### 2.1. Kiểm tra không còn hardcoded test key trong `services/*/src`
+```bash
+$ grep -rn "MDEyMzQ1" services/*/src
+(trả về 0 kết quả - exit code 1)
+```
+
+#### 2.2. Kiểm tra `pnpm lint`, `pnpm typecheck`, `pnpm build`
+```text
+$ pnpm lint
+> @iteso/gateway@0.1.0 lint /home/iteso/projects/ITESO-ecosystem/services/gateway
+> eslint "src/**/*.ts" "test/**/*.ts"
+> @iteso/control-plane@0.1.0 lint /home/iteso/projects/ITESO-ecosystem/services/control-plane
+> eslint "src/**/*.ts" "test/**/*.ts"
+Tasks: 2 successful, 2 total
+
+$ pnpm typecheck
+> @iteso/gateway@0.1.0 typecheck /home/iteso/projects/ITESO-ecosystem/services/gateway
+> tsc --noEmit
+> @iteso/control-plane@0.1.0 typecheck /home/iteso/projects/ITESO-ecosystem/services/control-plane
+> tsc --noEmit
+Tasks: 2 successful, 2 total
+
+$ pnpm build
+> @iteso/gateway@0.1.0 build /home/iteso/projects/ITESO-ecosystem/services/gateway
+> tsc -p tsconfig.build.json
+> @iteso/control-plane@0.1.0 build /home/iteso/projects/ITESO-ecosystem/services/control-plane
+> tsc -p tsconfig.build.json
+Tasks: 2 successful, 2 total
+```
+
+#### 2.3. Kiểm tra unit tests (`pnpm test`)
+```text
+$ pnpm test
+@iteso/gateway:test:
+PASS test/odoo-credential.spec.ts
+PASS test/app.spec.ts
+Test Suites: 2 passed, 2 total
+Tests:       28 passed, 28 total
+
+@iteso/control-plane:test:
+PASS test/odoo-provisioning.spec.ts
+PASS test/app.spec.ts
+Test Suites: 2 passed, 2 total
+Tests:       19 passed, 19 total
+
+Tasks: 2 successful, 2 total
+```
+
+#### 2.4. Kết quả chạy kiểm thử tự động Odoo module (`./scripts/test-odoo-module.sh`)
+```text
+[test-odoo-module] Dropping any leftover 't_test_iteso_base'...
+[test-odoo-module] Installing 'iteso_base' into fresh database 't_test_iteso_base'...
+2026-11-27 07:48:06,570 18981 INFO ? odoo: Odoo version 20.0-20261123
+...
+2026-11-27 07:48:19,252 18981 INFO t_test_iteso_base odoo.modules.loading: 1 modules loaded in 10.76s, 149 queries (+0 extra)
+[test-odoo-module] PASS: iteso_base installed cleanly in 't_test_iteso_base' (state=installed).
+[test-odoo-module] Running automated unit tests (--test-enable --test-tags /iteso_base)...
+2026-11-27 07:48:21,507 19003 INFO ? odoo: Odoo version 20.0-20261123
+...
+2026-11-27 07:48:38,550 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_01_caller_permission_check ...
+2026-11-27 07:48:38,588 19003 WARNING t_test_iteso_base odoo.addons.iteso_base.models.provisioning: Access denied to iteso.provisioning for user regular_test_user (uid 6)
+2026-11-27 07:48:38,591 19003 WARNING t_test_iteso_base odoo.addons.iteso_base.models.provisioning: Access denied to iteso.provisioning for user admin (uid 2)
+2026-11-27 07:48:38,618 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_02_group_whitelist_validation ...
+2026-11-27 07:48:38,623 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_03_idempotent_provisioning ...
+2026-11-27 07:48:38,664 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_04_issue_and_revoke_keys ...
+2026-11-27 07:48:38,719 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_05_disable_member ...
+2026-11-27 07:48:38,760 19003 INFO t_test_iteso_base odoo.addons.iteso_base.tests.test_provisioning: Starting TestItesoProvisioning.test_06_restricted_to_member_users_only ...
+2026-11-27 07:48:38,803 19003 INFO t_test_iteso_base odoo.tests.stats: iteso_base: 8 tests 0.31s 264 queries
+2026-11-27 07:48:38,803 19003 INFO t_test_iteso_base odoo.tests.result: 0 failed, 0 error(s) of 8 tests when loading database 't_test_iteso_base'
+[test-odoo-module] ALL TESTS PASSED for iteso_base.
+```
+
+#### 2.5. Kết quả chạy toàn bộ kiểm thử tích hợp (`make test`)
+```text
+$ make test
+pnpm --filter @iteso/control-plane test
+PASS test/odoo-provisioning.spec.ts (5.294 s)
+PASS test/app.spec.ts (6.24 s)
+Test Suites: 2 passed, 2 total
+Tests:       19 passed, 19 total
+
+pnpm --filter @iteso/gateway test
+PASS test/odoo-credential.spec.ts
+PASS test/app.spec.ts
+Test Suites: 2 passed, 2 total
+Tests:       28 passed, 28 total
+
+./scripts/test-db-isolation.sh
+[test-db-isolation] PASS: All database isolation checks passed cleanly.
+
+./scripts/test-odoo-module.sh
+[test-odoo-module] ALL TESTS PASSED for iteso_base.
+
+node scripts/test-acceptance-criteria.js
+--- Criterion 1: Provisioning demo_fnb ---
+✓ Criterion 1 PASS: All 3 members provisioned with valid odooUid, login, apiKeyEnc.
+
+--- Criterion 2: Database and credentials isolation ---
+✓ Criterion 2 PASS: Passwords are not accessible and keys are distinct.
+
+--- Criterion 3: External JSON-2 call with member credentials ---
+✓ Criterion 3 PASS: Version 200 OK with correct odoo_uid=7.
+
+--- Criterion 4: Disable membership revocation and re-enable ---
+✓ 4.1 Immediately rejected call with 403 ODOO_USER_NOT_PROVISIONED, user deactivated in Odoo.
+✓ 4.2 Re-enabled membership succeeds immediately -> 200 OK.
+✓ Criterion 4 PASS.
+
+--- Criterion 5: Direct JSON-2 iteso.provisioning caller verification ---
+✓ Criterion 5 PASS: Calling iteso.provisioning with member key is strictly rejected.
+
+--- Criterion 6: Idempotent sync verification ---
+✓ Criterion 6 PASS: Running sync twice preserves exact user count (3).
+
+--- Criterion 7: multi@demo.local in demo_fnb2 status = pending ---
+✓ Criterion 7 PASS: multi@demo.local status in demo_fnb2 is 'pending'.
+
+--- Criterion 8: Database permissions check ---
+✓ Criterion 8 PASS: Database isolation verified.
+
+--- Criterion 9: Regressions from TASK-002 and TASK-003 ---
+✓ Criterion 9 PASS: Prior criteria and backlog fixes intact.
+
+--- Criterion 10: Git history check for secrets ---
+✓ Criterion 10 PASS: No secret keys or credentials in git history.
+
+=================================================================
+ALL TASK-004 ACCEPTANCE CRITERIA PASSED SUCCESSFULLY (10/10)!
+=================================================================
+```

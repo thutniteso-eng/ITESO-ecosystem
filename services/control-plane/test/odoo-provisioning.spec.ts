@@ -256,4 +256,152 @@ describe('TASK-004: Control Plane OdooProvisioningService', () => {
       membership_id: membershipId,
     });
   });
+
+  describe('Non-destructive rotation error handling', () => {
+    const systemKeyRaw = 'test_system_key_abc';
+    const systemKeyEnc = encryptAesGcm(systemKeyRaw, testKeyBase64);
+
+    it('keeps status=active and only sets lastError if current key is still valid during failed rotation', async () => {
+      const dbMock = service.db;
+      const validUntil = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000); // 10 days in future
+
+      jest.spyOn(dbMock.query.memberships, 'findFirst').mockResolvedValue({
+        id: membershipId,
+        tenantId,
+        accountId,
+        status: 'active',
+        branchScope: [],
+        createdAt: new Date(),
+      });
+      jest.spyOn(dbMock.query.tenants, 'findFirst').mockResolvedValue({
+        id: tenantId,
+        code: 'demo_fnb',
+        displayName: 'Demo F&B',
+        dbName: 't_demo_fnb',
+        status: 'active',
+        industries: ['fnb'],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      jest.spyOn(dbMock.query.tenantOdooSystemKeys, 'findFirst').mockResolvedValue({
+        tenantId,
+        keyEnc: systemKeyEnc,
+        createdAt: new Date(),
+        rotatedAt: null,
+      });
+      jest.spyOn(dbMock.query.membershipOdooUsers, 'findFirst').mockResolvedValue({
+        membershipId,
+        tenantId,
+        odooUid: 10,
+        odooLogin: `iteso-${membershipId}`,
+        apiKeyEnc: 'enc_existing_valid_key',
+        keyExpiresAt: validUntil,
+        status: 'active',
+        lastError: null,
+        syncedAt: new Date(),
+      });
+      jest.spyOn(dbMock.query.accounts, 'findFirst').mockResolvedValue({
+        id: accountId,
+        email: 'member@demo.local',
+        phone: null,
+        passwordHash: 'hash',
+        totpSecretEnc: null,
+        totpEnabled: false,
+        lastTotpStep: null,
+        isPlatformAdmin: false,
+        status: 'active',
+        failedAttempts: 0,
+        lockedUntil: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      jest.spyOn(dbMock, 'select').mockReturnValue({
+        from: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      } as unknown as ReturnType<typeof dbMock.select>);
+
+      // Fail during call to Odoo
+      jest.spyOn(service, 'callOdooJson2').mockRejectedValue(new Error('Odoo network timeout'));
+
+      const updateSpy = jest.spyOn(dbMock, 'update').mockReturnValue({
+        set: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
+      } as unknown as ReturnType<typeof dbMock.update>);
+
+      const res = await service.syncMembership(membershipId);
+
+      // Status must remain active
+      expect(res.status).toBe('active');
+      expect(res.lastError).toContain('Odoo network timeout');
+      expect(updateSpy).toHaveBeenCalled();
+    });
+
+    it('sets status=error if no valid key exists when Odoo call fails', async () => {
+      const dbMock = service.db;
+
+      jest.spyOn(dbMock.query.memberships, 'findFirst').mockResolvedValue({
+        id: membershipId,
+        tenantId,
+        accountId,
+        status: 'active',
+        branchScope: [],
+        createdAt: new Date(),
+      });
+      jest.spyOn(dbMock.query.tenants, 'findFirst').mockResolvedValue({
+        id: tenantId,
+        code: 'demo_fnb',
+        displayName: 'Demo F&B',
+        dbName: 't_demo_fnb',
+        status: 'active',
+        industries: ['fnb'],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      jest.spyOn(dbMock.query.tenantOdooSystemKeys, 'findFirst').mockResolvedValue({
+        tenantId,
+        keyEnc: systemKeyEnc,
+        createdAt: new Date(),
+        rotatedAt: null,
+      });
+      // No existing record or expired key
+      jest.spyOn(dbMock.query.membershipOdooUsers, 'findFirst').mockResolvedValue(undefined);
+      jest.spyOn(dbMock.query.accounts, 'findFirst').mockResolvedValue({
+        id: accountId,
+        email: 'member@demo.local',
+        phone: null,
+        passwordHash: 'hash',
+        totpSecretEnc: null,
+        totpEnabled: false,
+        lastTotpStep: null,
+        isPlatformAdmin: false,
+        status: 'active',
+        failedAttempts: 0,
+        lockedUntil: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      jest.spyOn(dbMock, 'select').mockReturnValue({
+        from: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      } as unknown as ReturnType<typeof dbMock.select>);
+
+      // Fail during call to Odoo
+      jest.spyOn(service, 'callOdooJson2').mockRejectedValue(new Error('Odoo down'));
+
+      jest.spyOn(dbMock, 'insert').mockReturnValue({
+        values: () => ({
+          onConflictDoUpdate: () => Promise.resolve([]),
+        }),
+      } as unknown as ReturnType<typeof dbMock.insert>);
+
+      const res = await service.syncMembership(membershipId);
+
+      // Status must become error
+      expect(res.status).toBe('error');
+      expect(res.lastError).toContain('Odoo down');
+    });
+  });
 });

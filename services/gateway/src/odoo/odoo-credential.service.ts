@@ -58,7 +58,16 @@ export class OdooCredentialService implements OnModuleInit, OnModuleDestroy {
     if (!cKey && fs.existsSync(cKeyPath)) {
       cKey = fs.readFileSync(cKeyPath, 'utf8').trim();
     }
-    this.odooCredentialsKey = cKey || (process.env.NODE_ENV === 'test' ? 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=' : '');
+    if (!cKey) {
+      throw new Error(
+        `FATAL: Odoo credentials key not found at ${cKeyPath} or via ODOO_CREDENTIALS_KEY.`,
+      );
+    }
+    const decodedCKey = Buffer.from(cKey, 'base64');
+    if (decodedCKey.length !== 32) {
+      throw new Error(`FATAL: Odoo credentials key must be exactly 32 bytes (got ${decodedCKey.length}).`);
+    }
+    this.odooCredentialsKey = cKey;
   }
 
   async onModuleInit(): Promise<void> {

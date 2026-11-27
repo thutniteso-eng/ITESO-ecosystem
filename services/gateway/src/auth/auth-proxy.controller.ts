@@ -27,11 +27,8 @@ export class AuthProxyController {
     res: Response,
   ) {
     try {
-      // Forward real client IP and User-Agent
-      const clientIp =
-        (headers['x-forwarded-for'] as string) ||
-        req.socket.remoteAddress ||
-        '';
+      // Forward real client IP from socket and User-Agent; ignore client-supplied X-Forwarded-For
+      const clientIp = req.socket.remoteAddress || '';
       const userAgent = (headers['user-agent'] as string) || '';
 
       const response = await fetch(`${this.controlPlaneUrl}${path}`, {

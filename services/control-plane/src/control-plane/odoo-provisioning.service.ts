@@ -1,5 +1,5 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { eq, and, sql, lt, or } from 'drizzle-orm';
+import { eq, and, sql, lt } from 'drizzle-orm';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as fs from 'fs';
@@ -25,6 +25,7 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
   private readonly odooUrl: string;
   private readonly defaultTtlDays: number;
   private rotationIntervalTimer?: NodeJS.Timeout;
+  private retryIntervalTimer?: NodeJS.Timeout;
 
   constructor(private readonly natsService: NatsService) {
     this.pgPool = new Pool({
@@ -48,7 +49,16 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
     if (!pKey && fs.existsSync(pKeyPath)) {
       pKey = fs.readFileSync(pKeyPath, 'utf8').trim();
     }
-    this.platformEncKey = pKey || (process.env.NODE_ENV === 'test' ? 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=' : '');
+    if (!pKey) {
+      throw new Error(
+        `FATAL: Platform encryption key not found at ${pKeyPath} or via PLATFORM_ENCRYPTION_KEY.`,
+      );
+    }
+    const decodedPKey = Buffer.from(pKey, 'base64');
+    if (decodedPKey.length !== 32) {
+      throw new Error(`FATAL: Platform encryption key must be exactly 32 bytes (got ${decodedPKey.length}).`);
+    }
+    this.platformEncKey = pKey;
 
     // Odoo credentials key (for encrypting/decrypting member API keys)
     let cKey = process.env.ODOO_CREDENTIALS_KEY;
@@ -58,7 +68,16 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
     if (!cKey && fs.existsSync(cKeyPath)) {
       cKey = fs.readFileSync(cKeyPath, 'utf8').trim();
     }
-    this.odooCredentialsKey = cKey || (process.env.NODE_ENV === 'test' ? 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=' : '');
+    if (!cKey) {
+      throw new Error(
+        `FATAL: Odoo credentials key not found at ${cKeyPath} or via ODOO_CREDENTIALS_KEY.`,
+      );
+    }
+    const decodedCKey = Buffer.from(cKey, 'base64');
+    if (decodedCKey.length !== 32) {
+      throw new Error(`FATAL: Odoo credentials key must be exactly 32 bytes (got ${decodedCKey.length}).`);
+    }
+    this.odooCredentialsKey = cKey;
   }
 
   async onModuleInit(): Promise<void> {
@@ -67,8 +86,11 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
       this.runRotationCheck().catch((err) => {
         console.error('[OdooProvisioningService] Initial rotation check error:', err);
       });
+      this.runRetryCheck().catch((err) => {
+        console.error('[OdooProvisioningService] Initial retry check error:', err);
+      });
 
-      // Run every 24 hours
+      // Run rotation check every 24 hours
       this.rotationIntervalTimer = setInterval(
         () => {
           this.runRotationCheck().catch((err) => {
@@ -77,12 +99,25 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
         },
         24 * 60 * 60 * 1000,
       );
+
+      // Run retry check for records in error status every 1 hour
+      this.retryIntervalTimer = setInterval(
+        () => {
+          this.runRetryCheck().catch((err) => {
+            console.error('[OdooProvisioningService] Scheduled error retry check error:', err);
+          });
+        },
+        60 * 60 * 1000,
+      );
     }
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.rotationIntervalTimer) {
       clearInterval(this.rotationIntervalTimer);
+    }
+    if (this.retryIntervalTimer) {
+      clearInterval(this.retryIntervalTimer);
     }
     await this.pgPool.end();
   }
@@ -356,6 +391,32 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
       };
     } catch (err: unknown) {
       const errMsg = `Error provisioning member to Odoo: ${err instanceof Error ? err.message : String(err)}`;
+      const now = new Date();
+      const hasValidKey =
+        existingOdooUser &&
+        existingOdooUser.status === 'active' &&
+        existingOdooUser.apiKeyEnc &&
+        existingOdooUser.keyExpiresAt &&
+        new Date(existingOdooUser.keyExpiresAt) > now;
+
+      if (membership.status === 'active' && hasValidKey) {
+        // Non-destructive: existing active key is still valid, retain active status and log error
+        await this.db
+          .update(schema.membershipOdooUsers)
+          .set({
+            lastError: errMsg,
+            syncedAt: new Date(),
+          })
+          .where(eq(schema.membershipOdooUsers.membershipId, membership.id));
+
+        return {
+          membershipId: membership.id,
+          status: 'active',
+          odooUid: existingOdooUser?.odooUid,
+          lastError: errMsg,
+        };
+      }
+
       await this.saveRecordStatus(membership.id, tenant.id, 'error', {
         odooUid: existingOdooUser?.odooUid,
         lastError: errMsg,
@@ -397,27 +458,40 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
   }
 
   async runRotationCheck(): Promise<void> {
-    console.log('[OdooProvisioningService] Running key rotation and retry check...');
+    console.log('[OdooProvisioningService] Running key rotation check (expiring within 14 days)...');
     const now = new Date();
     const rotateThreshold = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
-    // Find active records expiring within 14 days, or records in 'error' state
+    // Find active records expiring within 14 days
     const candidates = await this.db.query.membershipOdooUsers.findMany({
-      where: or(
-        and(
-          eq(schema.membershipOdooUsers.status, 'active'),
-          lt(schema.membershipOdooUsers.keyExpiresAt, rotateThreshold),
-        ),
-        eq(schema.membershipOdooUsers.status, 'error'),
+      where: and(
+        eq(schema.membershipOdooUsers.status, 'active'),
+        lt(schema.membershipOdooUsers.keyExpiresAt, rotateThreshold),
       ),
     });
 
-    console.log(`[OdooProvisioningService] Found ${candidates.length} candidate(s) for rotation/retry.`);
+    console.log(`[OdooProvisioningService] Found ${candidates.length} candidate(s) for rotation.`);
     for (const c of candidates) {
       try {
         await this.syncMembership(c.membershipId);
       } catch (err: unknown) {
-        console.error(`[OdooProvisioningService] Rotation/retry failed for membership ${c.membershipId}:`, err);
+        console.error(`[OdooProvisioningService] Rotation failed for membership ${c.membershipId}:`, err);
+      }
+    }
+  }
+
+  async runRetryCheck(): Promise<void> {
+    console.log('[OdooProvisioningService] Running retry check for error records...');
+    const candidates = await this.db.query.membershipOdooUsers.findMany({
+      where: eq(schema.membershipOdooUsers.status, 'error'),
+    });
+
+    console.log(`[OdooProvisioningService] Found ${candidates.length} candidate(s) for retry.`);
+    for (const c of candidates) {
+      try {
+        await this.syncMembership(c.membershipId);
+      } catch (err: unknown) {
+        console.error(`[OdooProvisioningService] Retry failed for membership ${c.membershipId}:`, err);
       }
     }
   }

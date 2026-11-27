@@ -51,5 +51,15 @@ if [ "$STATE" != "installed" ]; then
   echo "ERROR: expected iteso_base state='installed', got '${STATE}'" >&2
   exit 1
 fi
-
 echo "[test-odoo-module] PASS: iteso_base installed cleanly in '${TEST_DB}' (state=${STATE})."
+
+echo "[test-odoo-module] Running automated unit tests (--test-enable --test-tags /iteso_base)..."
+compose exec -T odoo odoo \
+  -c /tmp/odoo.conf \
+  -d "$TEST_DB" \
+  --test-enable \
+  --test-tags /iteso_base \
+  --stop-after-init \
+  --no-http
+
+echo "[test-odoo-module] ALL TESTS PASSED for iteso_base."

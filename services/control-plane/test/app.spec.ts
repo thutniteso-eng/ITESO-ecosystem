@@ -399,7 +399,13 @@ describe('Control Plane Endpoints (TASK-003)', () => {
           query: {
             accounts: { findFirst: (...args: unknown[]) => Promise<unknown> };
           };
-          update: (...args: unknown[]) => { set: () => { where: () => Promise<void> } };
+          update: (...args: unknown[]) => {
+            set: () => {
+              where: () => {
+                returning: () => Promise<unknown[]>;
+              } & Promise<void>;
+            };
+          };
           insert: (...args: unknown[]) => { values: () => Promise<void> };
         };
       }
@@ -408,7 +414,10 @@ describe('Control Plane Endpoints (TASK-003)', () => {
       jest.spyOn(internalAuth.db.query.accounts, 'findFirst').mockResolvedValue(adminAccount);
       jest.spyOn(internalAuth.db, 'update').mockReturnValue({
         set: () => ({
-          where: () => Promise.resolve(),
+          where: () =>
+            Object.assign(Promise.resolve(), {
+              returning: () => Promise.resolve([{ id: adminAccount.id }]),
+            }),
         }),
       });
       jest.spyOn(internalAuth.db, 'insert').mockReturnValue({

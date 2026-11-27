@@ -76,6 +76,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_started
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       CONTROL_PLANE_PORT: 3100
@@ -85,6 +87,7 @@ services:
       POSTGRES_CONTROL_PLANE_PASSWORD: ${POSTGRES_CONTROL_PLANE_PASSWORD:?POSTGRES_CONTROL_PLANE_PASSWORD is required in .env}
       PLATFORM_DB: ${PLATFORM_DB:-platform}
       NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
       PLATFORM_ENCRYPTION_KEY: ${PLATFORM_ENCRYPTION_KEY:-}
       PLATFORM_ENCRYPTION_KEY_PATH: /app/secrets/platform_encryption.key
       DEMO_ACCOUNTS_PASSWORD: ${DEMO_ACCOUNTS_PASSWORD:?DEMO_ACCOUNTS_PASSWORD is required in .env}

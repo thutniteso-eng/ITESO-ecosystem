@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PlatformService } from '../features/platform.service';
@@ -36,6 +37,7 @@ export interface MemberContext {
 
 @Injectable()
 export class OdooService {
+  private readonly logger = new Logger(OdooService.name);
   private readonly odooUrl: string;
 
   constructor(
@@ -144,17 +146,19 @@ export class OdooService {
 
     if (res.status === 403) {
       const detail = await res.text().catch(() => '');
+      this.logger.error(`Odoo access denied (403): ${detail}`);
       throw new ForbiddenException({
         error: 'ODOO_ACCESS_DENIED',
-        message: `Odoo access denied: ${detail}`,
+        message: 'Access denied by Odoo',
       });
     }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
+      this.logger.error(`Odoo JSON-2 API returned HTTP ${res.status}: ${detail}`);
       throw new BadGatewayException({
         error: 'ODOO_API_ERROR',
-        message: `Odoo JSON-2 API returned HTTP ${res.status}: ${detail}`,
+        message: 'Odoo API request failed',
       });
     }
 

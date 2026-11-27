@@ -336,22 +336,24 @@ export class AuthService implements OnModuleInit {
       });
     }
 
-    // Check single-use time-step tracking
-    if (account.lastTotpStep && BigInt(account.lastTotpStep) >= BigInt(validStep)) {
-      throw new UnauthorizedException({
-        error: 'TOTP_CODE_ALREADY_USED',
-        message: 'This TOTP code has already been used. Please wait for the next time-step.',
-      });
-    }
-
-    // Record last used time-step
-    await this.db
+    // Atomic single-use time-step tracking to prevent concurrent reuse
+    const updateResult = await this.db
       .update(schema.accounts)
       .set({
         lastTotpStep: String(validStep),
         updatedAt: new Date(),
       })
-      .where(eq(schema.accounts.id, account.id));
+      .where(
+        sql`${schema.accounts.id} = ${account.id} AND (${schema.accounts.lastTotpStep} IS NULL OR ${schema.accounts.lastTotpStep}::bigint < ${validStep})`,
+      )
+      .returning({ id: schema.accounts.id });
+
+    if (updateResult.length === 0) {
+      throw new UnauthorizedException({
+        error: 'TOTP_CODE_ALREADY_USED',
+        message: 'This TOTP code has already been used. Please wait for the next time-step.',
+      });
+    }
 
     // Issue platform admin token
     const accessTokenPayload: AccessTokenPayload = {

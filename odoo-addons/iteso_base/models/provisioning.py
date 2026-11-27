@@ -28,6 +28,11 @@ class ItesoProvisioning(models.AbstractModel):
             _logger.warning("Access denied to iteso.provisioning for user %s (uid %s)", current_user.login, current_user.id)
             raise AccessError("Access denied: only iteso_system can call iteso.provisioning methods.")
 
+    def _check_member_user(self, user):
+        """Ensure target user is a member account (login starts with iteso- and is not iteso_system)."""
+        if not user.login or not user.login.startswith("iteso-") or user.login == "iteso_system":
+            raise AccessError("Operation allowed only on iteso-* member accounts.")
+
     @api.model
     def provision_member(self, membership_id, name, group_xmlids=None):
         """
@@ -90,6 +95,7 @@ class ItesoProvisioning(models.AbstractModel):
         user = self.env["res.users"].sudo().browse(uid)
         if not user.exists():
             raise ValidationError(f"User with uid {uid} does not exist.")
+        self._check_member_user(user)
 
         ttl_days = int(ttl_days) if ttl_days else 90
         expiration_date = datetime.datetime.now() + datetime.timedelta(days=ttl_days)
@@ -115,6 +121,11 @@ class ItesoProvisioning(models.AbstractModel):
         """
         self._check_caller_permissions()
 
+        user = self.env["res.users"].sudo().browse(uid)
+        if not user.exists():
+            raise ValidationError(f"User with uid {uid} does not exist.")
+        self._check_member_user(user)
+
         keys = self.env["res.users.apikeys"].sudo().search(
             [("user_id", "=", uid), ("scope", "=", "rpc"), ("name", "=", "iteso-gateway")],
             order="create_date desc, id desc",
@@ -137,6 +148,7 @@ class ItesoProvisioning(models.AbstractModel):
         user = self.env["res.users"].sudo().browse(uid)
         if not user.exists():
             return {"disabled": False, "reason": "not_found"}
+        self._check_member_user(user)
 
         user.write({"active": False})
 

@@ -45,9 +45,15 @@ export class TokenService implements OnModuleInit, OnModuleDestroy {
         await this.redis.connect();
       } catch (err) {
         if (process.env.NODE_ENV !== 'test') {
-          console.warn('[TokenService] Redis connection error, using in-memory single-use tracking:', err);
+          throw new Error(
+            `FATAL: Failed to connect to Redis at ${redisUrl}. Single-use token tracking requires Redis in non-test environments: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
+    } else if (process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        'FATAL: REDIS_URL environment variable is required in non-test environments for single-use token tracking.',
+      );
     }
   }
 
