@@ -101,11 +101,14 @@ export function generateTotp(secret: string, counterOffset = 0): string {
   return otp.toString().padStart(6, '0');
 }
 
-export function verifyTotp(token: string, secret: string, window = 1): boolean {
+export function verifyTotp(token: string, secret: string, window = 1): number | false {
   if (!token || token.length !== 6) return false;
+  const epoch = Math.floor(Date.now() / 1000);
+  const currentStep = Math.floor(epoch / 30);
   for (let i = -window; i <= window; i++) {
+    const step = currentStep + i;
     if (generateTotp(secret, i) === token) {
-      return true;
+      return step;
     }
   }
   return false;

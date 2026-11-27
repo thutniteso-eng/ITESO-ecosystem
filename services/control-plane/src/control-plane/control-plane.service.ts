@@ -11,13 +11,17 @@ import { Pool } from 'pg';
 import * as schema from '../db/schema';
 import { NatsService } from '../nats/nats.service';
 import { hashPassword } from '../auth/crypto.util';
+import { OdooProvisioningService } from './odoo-provisioning.service';
 
 @Injectable()
 export class ControlPlaneService implements OnModuleDestroy {
   private readonly pgPool: Pool;
   private readonly db: NodePgDatabase<typeof schema>;
 
-  constructor(private readonly natsService: NatsService) {
+  constructor(
+    private readonly natsService: NatsService,
+    private readonly provisioningService: OdooProvisioningService,
+  ) {
     this.pgPool = new Pool({
       host: process.env.POSTGRES_HOST ?? 'postgres',
       port: Number(process.env.POSTGRES_PORT ?? 5432),
@@ -412,12 +416,162 @@ export class ControlPlaneService implements OnModuleDestroy {
       });
     });
 
+    // Trigger Odoo provisioning asynchronously / catch error gracefully
+    let odooSyncStatus = 'success';
+    try {
+      const provRes = await this.provisioningService.syncMembership(membershipId!);
+      if (provRes.status === 'error') {
+        odooSyncStatus = 'error';
+      } else if (provRes.status === 'pending') {
+        odooSyncStatus = 'pending';
+      }
+    } catch {
+      odooSyncStatus = 'error';
+    }
+
     return {
       id: membershipId!,
       accountId: account.id,
       tenantCode,
       roles: data.roleNames,
+      odoo_sync: odooSyncStatus,
     };
+  }
+
+  async updateMembership(
+    tenantCode: string,
+    membershipId: string,
+    data: { status?: 'active' | 'disabled'; roleNames?: string[] },
+    actor: string,
+  ) {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.code, tenantCode),
+    });
+
+    if (!tenant) {
+      throw new NotFoundException({
+        error: 'TENANT_NOT_FOUND',
+        message: `Tenant '${tenantCode}' not found`,
+      });
+    }
+
+    const membership = await this.db.query.memberships.findFirst({
+      where: and(
+        eq(schema.memberships.id, membershipId),
+        eq(schema.memberships.tenantId, tenant.id),
+      ),
+    });
+
+    if (!membership) {
+      throw new NotFoundException({
+        error: 'MEMBERSHIP_NOT_FOUND',
+        message: `Membership '${membershipId}' not found in tenant '${tenantCode}'`,
+      });
+    }
+
+    const beforeState = {
+      status: membership.status,
+    };
+
+    let rolesList: Array<typeof schema.roles.$inferSelect> = [];
+    if (data.roleNames && data.roleNames.length > 0) {
+      rolesList = await this.db.query.roles.findMany({
+        where: and(
+          eq(schema.roles.tenantId, tenant.id),
+          inArray(schema.roles.name, data.roleNames),
+        ),
+      });
+
+      if (rolesList.length !== data.roleNames.length) {
+        throw new BadRequestException({
+          error: 'INVALID_ROLES',
+          message: 'One or more roles do not exist for this tenant',
+        });
+      }
+    }
+
+    await this.db.transaction(async (tx) => {
+      if (data.status) {
+        await tx
+          .update(schema.memberships)
+          .set({ status: data.status })
+          .where(eq(schema.memberships.id, membershipId));
+      }
+
+      if (data.roleNames && data.roleNames.length > 0) {
+        await tx
+          .delete(schema.membershipRoles)
+          .where(eq(schema.membershipRoles.membershipId, membershipId));
+
+        for (const role of rolesList) {
+          await tx.insert(schema.membershipRoles).values({
+            membershipId,
+            roleId: role.id,
+          });
+        }
+      }
+
+      await tx.insert(schema.adminAuditLog).values({
+        actor,
+        action: 'UPDATE_MEMBERSHIP',
+        targetType: 'membership',
+        targetId: membershipId,
+        before: beforeState,
+        after: {
+          status: data.status ?? membership.status,
+          roles: data.roleNames,
+        },
+      });
+    });
+
+    // Trigger Odoo sync
+    let odooSyncStatus = 'success';
+    try {
+      const provRes = await this.provisioningService.syncMembership(membershipId);
+      if (provRes.status === 'error') {
+        odooSyncStatus = 'error';
+      } else if (provRes.status === 'pending') {
+        odooSyncStatus = 'pending';
+      }
+    } catch {
+      odooSyncStatus = 'error';
+    }
+
+    return {
+      id: membershipId,
+      status: data.status ?? membership.status,
+      odoo_sync: odooSyncStatus,
+    };
+  }
+
+  async syncMembershipOdoo(tenantCode: string, membershipId: string) {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.code, tenantCode),
+    });
+
+    if (!tenant) {
+      throw new NotFoundException({
+        error: 'TENANT_NOT_FOUND',
+        message: `Tenant '${tenantCode}' not found`,
+      });
+    }
+
+    const membership = await this.db.query.memberships.findFirst({
+      where: and(
+        eq(schema.memberships.id, membershipId),
+        eq(schema.memberships.tenantId, tenant.id),
+      ),
+    });
+
+    if (!membership) {
+      throw new NotFoundException({
+        error: 'MEMBERSHIP_NOT_FOUND',
+        message: `Membership '${membershipId}' not found`,
+      });
+    }
+
+    const res = await this.provisioningService.syncMembership(membershipId);
+    return res;
   }
 
   async resetPassword(accountId: string, newPassword: string, actor: string) {

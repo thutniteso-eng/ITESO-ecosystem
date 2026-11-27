@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as jose from 'jose';
 import { AppModule } from '../src/app.module';
 import { GatewayNatsListener } from '../src/features/gateway-nats.listener';
+import { OdooCredentialService } from '../src/odoo/odoo-credential.service';
 import { PlatformService } from '../src/features/platform.service';
 import { HealthService } from '../src/health/health.service';
 import { OdooService } from '../src/odoo/odoo.service';
@@ -74,6 +75,13 @@ describe('Gateway endpoints (TASK-003)', () => {
       .useValue({
         onModuleInit: jest.fn(),
         onModuleDestroy: jest.fn(),
+      })
+      .overrideProvider(OdooCredentialService)
+      .useValue({
+        onModuleInit: jest.fn(),
+        onModuleDestroy: jest.fn(),
+        getMemberCredential: jest.fn(),
+        evictCache: jest.fn(),
       })
       .compile();
 
@@ -461,6 +469,42 @@ describe('Gateway endpoints (TASK-003)', () => {
       const second = await platformService.isFeatureEnabled('demo_fnb', 'system.odoo_version');
       expect(second).toBe(false);
       expect(querySpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('AuthProxyController client IP forwarding', () => {
+    it('ignores client X-Forwarded-For and forwards socket remoteAddress to control-plane', async () => {
+      jest.spyOn(platformService, 'isPlatformFeatureEnabled').mockResolvedValue(true);
+
+      let forwardedHeaders: Headers | undefined;
+      const originalFetch = global.fetch;
+
+      global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (typeof url === 'string' && url.includes('/v1/auth/login')) {
+          forwardedHeaders = new Headers(init?.headers as Record<string, string>);
+          return Promise.resolve({
+            status: 401,
+            json: () => Promise.resolve({ error: 'INVALID_CREDENTIALS', message: 'Invalid credentials' }),
+          } as unknown as Response);
+        }
+        return originalFetch(url, init);
+      });
+
+      try {
+        await request(app.getHttpServer())
+          .post('/v1/auth/login')
+          .set('X-Forwarded-For', '1.2.3.4')
+          .set('User-Agent', 'TestClient/1.0')
+          .send({ email: 'user@test.local', password: 'password123' })
+          .expect(401);
+
+        expect(forwardedHeaders).toBeDefined();
+        const headerIp = forwardedHeaders?.get('x-forwarded-for');
+        // Must NOT be the spoofed IP '1.2.3.4'
+        expect(headerIp).not.toBe('1.2.3.4');
+      } finally {
+        global.fetch = originalFetch;
+      }
     });
   });
 });

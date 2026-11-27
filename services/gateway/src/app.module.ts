@@ -11,6 +11,7 @@ import { HealthController } from './health/health.controller';
 import { HealthService } from './health/health.service';
 import { OdooController } from './odoo/odoo.controller';
 import { OdooService } from './odoo/odoo.service';
+import { OdooCredentialService } from './odoo/odoo-credential.service';
 
 @Module({
   controllers: [
@@ -22,6 +23,7 @@ import { OdooService } from './odoo/odoo.service';
   providers: [
     HealthService,
     OdooService,
+    OdooCredentialService,
     PlatformService,
     GatewayNatsListener,
     JwtVerifierService,

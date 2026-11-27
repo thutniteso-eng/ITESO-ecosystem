@@ -23,13 +23,20 @@ export class AuthProxyController {
     path: string,
     body: unknown,
     headers: Record<string, string | string[] | undefined>,
+    req: Request,
     res: Response,
   ) {
     try {
+      // Forward real client IP from socket and User-Agent; ignore client-supplied X-Forwarded-For
+      const clientIp = req.socket.remoteAddress || '';
+      const userAgent = (headers['user-agent'] as string) || '';
+
       const response = await fetch(`${this.controlPlaneUrl}${path}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          'x-forwarded-for': clientIp,
+          'user-agent': userAgent,
           ...(headers['authorization']
             ? { authorization: String(headers['authorization']) }
             : {}),
@@ -53,7 +60,7 @@ export class AuthProxyController {
   @RequireFeature('system.auth')
   @Public()
   async login(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
-    return this.forwardPost('/v1/auth/login', body, req.headers, res);
+    return this.forwardPost('/v1/auth/login', body, req.headers, req, res);
   }
 
   @Post('auth/select-tenant')
@@ -61,7 +68,7 @@ export class AuthProxyController {
   @RequireFeature('system.auth')
   @Public()
   async selectTenant(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
-    return this.forwardPost('/v1/auth/select-tenant', body, req.headers, res);
+    return this.forwardPost('/v1/auth/select-tenant', body, req.headers, req, res);
   }
 
   @Post('auth/totp')
@@ -69,7 +76,7 @@ export class AuthProxyController {
   @RequireFeature('system.auth')
   @Public()
   async totp(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
-    return this.forwardPost('/v1/auth/totp', body, req.headers, res);
+    return this.forwardPost('/v1/auth/totp', body, req.headers, req, res);
   }
 
   @Post('auth/refresh')
@@ -77,7 +84,7 @@ export class AuthProxyController {
   @RequireFeature('system.auth')
   @Public()
   async refresh(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
-    return this.forwardPost('/v1/auth/refresh', body, req.headers, res);
+    return this.forwardPost('/v1/auth/refresh', body, req.headers, req, res);
   }
 
   @Post('auth/logout')
@@ -85,7 +92,7 @@ export class AuthProxyController {
   @RequireFeature('system.auth')
   @Public()
   async logout(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
-    return this.forwardPost('/v1/auth/logout', body, req.headers, res);
+    return this.forwardPost('/v1/auth/logout', body, req.headers, req, res);
   }
 
   @Get('me')

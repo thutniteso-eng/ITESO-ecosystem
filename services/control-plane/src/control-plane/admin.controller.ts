@@ -162,6 +162,25 @@ export class AdminController {
     return this.cpService.resetPassword(id, body.password, actor);
   }
 
+  @Put('tenants/:code/memberships/:id')
+  async updateMembership(
+    @Param('code') code: string,
+    @Param('id') id: string,
+    @Body() body: { status?: 'active' | 'disabled'; roleNames?: string[] },
+    @Req() req: RequestWithUser,
+  ) {
+    const actor = req.user?.id || 'super_admin';
+    return this.cpService.updateMembership(code, id, body, actor);
+  }
+
+  @Post('tenants/:code/memberships/:id/odoo-sync')
+  async syncMembershipOdoo(
+    @Param('code') code: string,
+    @Param('id') id: string,
+  ) {
+    return this.cpService.syncMembershipOdoo(code, id);
+  }
+
   @Get('tenants/:code/roles')
   async getTenantRoles(@Param('code') code: string) {
     return this.cpService.getTenantRoles(code);

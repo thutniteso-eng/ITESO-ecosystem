@@ -1,8 +1,9 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as jose from 'jose';
 import * as crypto from 'crypto';
+import Redis from 'ioredis';
 
 export interface AccessTokenPayload {
   sub: string;
@@ -26,16 +27,40 @@ export interface ShortLivedTokenPayload {
 }
 
 @Injectable()
-export class TokenService implements OnModuleInit {
+export class TokenService implements OnModuleInit, OnModuleDestroy {
   private privateKeyObj!: jose.KeyLike | Uint8Array;
   private publicKeyObj!: jose.KeyLike | Uint8Array;
   private kid: string = process.env.JWT_KEY_ID || 'iteso-ed25519-key-1';
+  private redis?: Redis;
 
-  // In-memory single-use tracking: jti -> expiresAtMs
+  // Fallback in-memory map for unit tests where Redis is not available
   private readonly usedJtis = new Map<string, number>();
 
   async onModuleInit(): Promise<void> {
     await this.loadKeys();
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      try {
+        this.redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1 });
+        await this.redis.connect();
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'test') {
+          throw new Error(
+            `FATAL: Failed to connect to Redis at ${redisUrl}. Single-use token tracking requires Redis in non-test environments: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    } else if (process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        'FATAL: REDIS_URL environment variable is required in non-test environments for single-use token tracking.',
+      );
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.redis) {
+      await this.redis.quit().catch(() => {});
+    }
   }
 
   async loadKeys(): Promise<void> {
@@ -143,21 +168,29 @@ export class TokenService implements OnModuleInit {
       throw new Error(`Invalid token type, expected ${expectedTyp}`);
     }
 
-    // Clean up expired jtis
-    const now = Date.now();
-    for (const [key, exp] of this.usedJtis.entries()) {
-      if (exp <= now) {
-        this.usedJtis.delete(key);
+    if (this.redis) {
+      // Redis atomic single-use tracking: SET jti:<jti> 1 EX 300 NX
+      const result = await this.redis.set(`jti:${jti}`, '1', 'EX', 300, 'NX');
+      if (result !== 'OK') {
+        throw new Error('Token has already been used');
       }
-    }
+    } else {
+      // Clean up expired jtis
+      const now = Date.now();
+      for (const [key, exp] of this.usedJtis.entries()) {
+        if (exp <= now) {
+          this.usedJtis.delete(key);
+        }
+      }
 
-    if (this.usedJtis.has(jti)) {
-      throw new Error('Token has already been used');
-    }
+      if (this.usedJtis.has(jti)) {
+        throw new Error('Token has already been used');
+      }
 
-    // Mark as used until token's expiration
-    const expMs = (verified.payload.exp ?? Math.floor(now / 1000) + 300) * 1000;
-    this.usedJtis.set(jti, expMs);
+      // Mark as used until token's expiration
+      const expMs = (verified.payload.exp ?? Math.floor(now / 1000) + 300) * 1000;
+      this.usedJtis.set(jti, expMs);
+    }
 
     return verified.payload as unknown as ShortLivedTokenPayload;
   }

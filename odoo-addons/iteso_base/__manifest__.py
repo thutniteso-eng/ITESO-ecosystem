@@ -7,7 +7,9 @@
     "author": "ITESO",
     "license": "LGPL-3",
     "depends": ["base"],
-    "data": [],
+    "data": [
+        "security/ir.access.csv",
+    ],
     "installable": True,
     "application": False,
     "auto_install": False,

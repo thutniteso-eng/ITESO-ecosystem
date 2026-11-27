@@ -21,6 +21,12 @@ export const implementationStatusEnum = pgEnum('implementation_status', [
 ]);
 export const accountStatusEnum = pgEnum('account_status', ['active', 'disabled']);
 export const membershipStatusEnum = pgEnum('membership_status', ['active', 'disabled']);
+export const odooUserStatusEnum = pgEnum('odoo_user_status', [
+  'pending',
+  'active',
+  'disabled',
+  'error',
+]);
 
 export const tenants = pgTable('tenants', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -88,6 +94,7 @@ export const accounts = pgTable(
     status: accountStatusEnum('status').default('active').notNull(),
     failedAttempts: integer('failed_attempts').default(0).notNull(),
     lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    lastTotpStep: text('last_totp_step'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -111,6 +118,7 @@ export const roles = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     isOwner: boolean('is_owner').default(false).notNull(),
+    odooGroups: text('odoo_groups').array().default(['base.group_user']).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
@@ -187,4 +195,29 @@ export const refreshTokens = pgTable('refresh_tokens', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   userAgent: text('user_agent'),
   ip: text('ip'),
+});
+
+export const tenantOdooSystemKeys = pgTable('tenant_odoo_system_keys', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  keyEnc: text('key_enc').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+});
+
+export const membershipOdooUsers = pgTable('membership_odoo_users', {
+  membershipId: uuid('membership_id')
+    .primaryKey()
+    .references(() => memberships.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  odooUid: integer('odoo_uid'),
+  odooLogin: text('odoo_login'),
+  apiKeyEnc: text('api_key_enc'),
+  keyExpiresAt: timestamp('key_expires_at', { withTimezone: true }),
+  status: odooUserStatusEnum('status').default('pending').notNull(),
+  lastError: text('last_error'),
+  syncedAt: timestamp('synced_at', { withTimezone: true }),
 });

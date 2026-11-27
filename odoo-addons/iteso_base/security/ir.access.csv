@@ -1,0 +1,2 @@
+id,name,model_id:id,group_id:id,operation,domain
+access_ir_module_module_group_user_read,ir_module_module group_user read,base.model_ir_module_module,base.group_user,read,
