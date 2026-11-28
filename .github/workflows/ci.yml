@@ -67,7 +67,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Prepare .env from .env.example
-        run: cp .env.example .env
+        run: |
+          cp .env.example .env
+          sed -i 's/^DEMO_ACCOUNTS_PASSWORD=.*/DEMO_ACCOUNTS_PASSWORD=Admin@1234567/' .env
 
       - name: Generate Ed25519 keypair
         run: |

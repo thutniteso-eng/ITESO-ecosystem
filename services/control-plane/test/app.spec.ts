@@ -25,6 +25,9 @@ describe('Control Plane Endpoints (TASK-003)', () => {
   beforeAll(() => {
     process.env.PLATFORM_ENCRYPTION_KEY = testKeyBase64;
     process.env.ODOO_CREDENTIALS_KEY = testKeyBase64;
+    process.env.INTERNAL_API_TOKEN =
+      process.env.INTERNAL_API_TOKEN ||
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   });
 
   beforeEach(async () => {
