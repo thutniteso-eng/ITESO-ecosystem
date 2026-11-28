@@ -28,7 +28,7 @@ Mỗi quyết định sẽ được viết thành ADR riêng trong PR của task
 
 1. **Giao diện** (ADR-008, ở TASK-007):
    - Trang quản trị: **Next.js** (`apps/admin-web`).
-   - App POS: **Expo / React Native**, ưu tiên **máy tính bảng Android** (`apps/pos`), lưu dữ liệu offline bằng SQLite.
+   - App POS: **Expo / React Native**, làm cho **điện thoại Android** trước (`apps/pos`), lưu dữ liệu offline bằng SQLite. Máy tính bảng dùng cùng app, giao diện tự giãn theo màn hình, tinh chỉnh sau.
    - Gói dùng chung: `packages/api-client` sinh từ OpenAPI của gateway, nên frontend và backend luôn khớp kiểu dữ liệu; `packages/ui` chứa màu, chữ và thành phần dùng chung.
    - Tiếng Việt trước, kèm tiếng Anh.
    - App chỉ gọi gateway, không gọi thẳng Odoo.
