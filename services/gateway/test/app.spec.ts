@@ -48,6 +48,9 @@ describe('Gateway endpoints (TASK-003)', () => {
   const testKid = 'iteso-ed25519-key-1';
 
   beforeAll(async () => {
+    process.env.INTERNAL_API_TOKEN =
+      process.env.INTERNAL_API_TOKEN ||
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     // Generate valid test keypair
     const pair = crypto.generateKeyPairSync('ed25519');
     testPrivateKey = await jose.importPKCS8(
@@ -147,6 +150,13 @@ describe('Gateway endpoints (TASK-003)', () => {
 
     return jwt.sign(signingKey);
   }
+
+  describe('API Docs Swagger UI Gating (TASK-007 Round 2)', () => {
+    it('returns 404 for /docs by default when ENABLE_API_DOCS is not true', async () => {
+      const res = await request(app.getHttpServer()).get('/docs');
+      expect(res.status).toBe(404);
+    });
+  });
 
   describe('GET /health', () => {
     it('returns 200 and ok for all 5 components without needing token or @RequireFeature', async () => {

@@ -110,6 +110,10 @@ export class TokenService implements OnModuleInit, OnModuleDestroy {
   }
 
   async signAccessToken(payload: AccessTokenPayload): Promise<string> {
+    const ttl = process.env.ACCESS_TOKEN_TTL_SECONDS
+      ? `${process.env.ACCESS_TOKEN_TTL_SECONDS}s`
+      : '15m';
+
     return new jose.SignJWT({
       ...payload,
       typ: 'access',
@@ -118,7 +122,7 @@ export class TokenService implements OnModuleInit, OnModuleDestroy {
       .setIssuer('iteso-control-plane')
       .setAudience('iteso-api')
       .setIssuedAt()
-      .setExpirationTime('15m')
+      .setExpirationTime(ttl)
       .sign(this.privateKeyObj);
   }
 

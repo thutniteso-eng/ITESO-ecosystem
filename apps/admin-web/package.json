@@ -1,0 +1,40 @@
+{
+  "name": "@iteso/admin-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ITESO Admin Web Portal & Super Admin Dashboard (TASK-007, ADR-008)",
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@iteso/api-client": "workspace:*",
+    "@iteso/ui": "workspace:*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.83.0",
+    "next": "15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@playwright/test": "^1.65.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.28.0",
+    "jest": "^29.7.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "ts-jest": "^29.3.4",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.0"
+  }
+}

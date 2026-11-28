@@ -1,4 +1,5 @@
 import { Controller, Get, NotFoundException, Req } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { PlatformService } from './platform.service';
 import { RequireFeature } from './require-feature.decorator';
@@ -9,6 +10,8 @@ interface RequestWithTenant extends Request {
   user?: { tid?: string };
 }
 
+@ApiTags('Features')
+@ApiBearerAuth()
 @Controller('v1/features')
 export class FeaturesController {
   constructor(private readonly platformService: PlatformService) {}
@@ -16,6 +19,8 @@ export class FeaturesController {
   @Get()
   @RequireFeature('system.features')
   @RequirePermission('system.features.read')
+  @ApiOperation({ summary: 'Get active features enabled for the authenticated tenant' })
+  @ApiResponse({ status: 200, description: 'List of active feature keys' })
   async getFeatures(@Req() req: RequestWithTenant): Promise<{
     tenant: string;
     features: string[];

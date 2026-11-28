@@ -170,7 +170,7 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
   }
 
   // 5. Seed demo accounts
-  const demoPassword = process.env.DEMO_ACCOUNTS_PASSWORD || 'Admin@123456';
+  const demoPassword = process.env.DEMO_ACCOUNTS_PASSWORD || 'Admin@1234567';
   const passwordHash = await argon2.hash(demoPassword, {
     type: argon2.argon2id,
     memoryCost: 19456, // 19 MiB

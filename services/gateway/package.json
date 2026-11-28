@@ -9,12 +9,14 @@
     "start:dev": "ts-node src/main.ts",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "openapi:export": "ts-node src/cli/export-openapi.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-express": "^11.1.0",
+    "@nestjs/swagger": "^11.4.8",
     "ioredis": "^5.6.1",
     "jose": "^5.10.0",
     "nats": "^2.29.3",

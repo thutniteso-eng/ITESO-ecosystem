@@ -4,16 +4,26 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { PlatformAdminGuard } from '../auth/platform-admin.guard';
 import { ControlPlaneService } from './control-plane.service';
 
 interface UpdateFeatureDto {
-  enabled: boolean;
+  enabled: boolean | null;
   note?: string;
 }
 
@@ -34,10 +44,10 @@ function validateFeatureBody(body: unknown): UpdateFeatureDto {
   }
 
   const b = body as Record<string, unknown>;
-  if (typeof b.enabled !== 'boolean') {
+  if (typeof b.enabled !== 'boolean' && b.enabled !== null) {
     throw new BadRequestException({
       error: 'BAD_REQUEST',
-      message: "Field 'enabled' must be a boolean",
+      message: "Field 'enabled' must be a boolean or null",
     });
   }
 
@@ -57,43 +67,67 @@ function validateFeatureBody(body: unknown): UpdateFeatureDto {
   }
 
   return {
-    enabled: b.enabled,
+    enabled: b.enabled as boolean | null,
     note: b.note as string | undefined,
   };
 }
 
+@ApiTags('Admin')
+@ApiBearerAuth()
 @Controller('admin')
 @UseGuards(PlatformAdminGuard)
 export class AdminController {
   constructor(private readonly cpService: ControlPlaneService) {}
 
   @Get('tenants')
+  @ApiOperation({ summary: 'List all businesses/tenants with member counts and created date' })
+  @ApiResponse({ status: 200, description: 'List of tenants' })
   async getTenants() {
     return this.cpService.getTenants();
   }
 
   @Get('features')
+  @ApiOperation({ summary: 'List all platform feature definitions' })
+  @ApiResponse({ status: 200, description: 'List of feature definitions' })
   async getFeatures() {
     return this.cpService.getFeatures();
   }
 
   @Get('tenants/:code/features')
+  @ApiOperation({ summary: 'Get effective features and overrides for a tenant' })
+  @ApiParam({ name: 'code', description: 'Tenant code (e.g. demo_fnb)' })
+  @ApiResponse({ status: 200, description: 'List of tenant features with effective status' })
   async getTenantFeatures(@Param('code') code: string) {
     return this.cpService.getTenantFeatures(code);
   }
 
   @Put('features/:key/platform')
+  @Patch('features/:key/platform')
+  @ApiOperation({ summary: 'Update platform-wide feature toggle' })
+  @ApiParam({ name: 'key', description: 'Feature key (e.g. pos.devices)' })
+  @ApiResponse({ status: 200, description: 'Feature updated' })
   async updatePlatformFeature(
     @Param('key') key: string,
     @Body() body: unknown,
     @Req() req: RequestWithUser,
   ) {
     const validBody = validateFeatureBody(body);
+    if (typeof validBody.enabled !== 'boolean') {
+      throw new BadRequestException({
+        error: 'BAD_REQUEST',
+        message: 'Platform feature toggle requires a boolean value',
+      });
+    }
     const actor = req.user?.id || 'super_admin';
     return this.cpService.updatePlatformFeature(key, validBody.enabled, validBody.note, actor);
   }
 
   @Put('tenants/:code/features/:key')
+  @Patch('tenants/:code/features/:key')
+  @ApiOperation({ summary: 'Update tenant-level feature override (true, false, or null for default)' })
+  @ApiParam({ name: 'code', description: 'Tenant code' })
+  @ApiParam({ name: 'key', description: 'Feature key' })
+  @ApiResponse({ status: 200, description: 'Tenant feature updated' })
   async updateTenantFeature(
     @Param('code') code: string,
     @Param('key') key: string,
@@ -105,9 +139,37 @@ export class AdminController {
     return this.cpService.updateTenantFeature(code, key, validBody.enabled, validBody.note, actor);
   }
 
+  @Get('audit-log')
+  @ApiOperation({ summary: 'Get administrative audit log with filtering and pagination' })
+  @ApiQuery({ name: 'from', required: false, description: 'From ISO date' })
+  @ApiQuery({ name: 'to', required: false, description: 'To ISO date' })
+  @ApiQuery({ name: 'actor', required: false, description: 'Filter by actor ID or email' })
+  @ApiQuery({ name: 'action', required: false, description: 'Filter by action name' })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Page size (default 50)' })
+  @ApiResponse({ status: 200, description: 'Paginated audit logs' })
+  async getAuditLog(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('actor') actor?: string,
+    @Query('action') action?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.cpService.getAuditLog({
+      from,
+      to,
+      actor,
+      action,
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 50,
+    });
+  }
+
   // --- TASK-003 Admin APIs ---
 
   @Post('accounts')
+  @ApiOperation({ summary: 'Create user account' })
   async createAccount(
     @Body() body: { email?: string; phone?: string; password?: string; isPlatformAdmin?: boolean },
     @Req() req: RequestWithUser,
@@ -131,6 +193,7 @@ export class AdminController {
   }
 
   @Post('tenants/:code/memberships')
+  @ApiOperation({ summary: 'Add account membership to a tenant' })
   async createMembership(
     @Param('code') code: string,
     @Body() body: { accountId?: string; roleNames?: string[] },
@@ -147,6 +210,7 @@ export class AdminController {
   }
 
   @Put('accounts/:id/password')
+  @ApiOperation({ summary: 'Reset account password' })
   async resetPassword(
     @Param('id') id: string,
     @Body() body: { password?: string },
@@ -163,6 +227,7 @@ export class AdminController {
   }
 
   @Put('tenants/:code/memberships/:id')
+  @ApiOperation({ summary: 'Update tenant membership status and roles' })
   async updateMembership(
     @Param('code') code: string,
     @Param('id') id: string,
@@ -174,6 +239,7 @@ export class AdminController {
   }
 
   @Post('tenants/:code/memberships/:id/odoo-sync')
+  @ApiOperation({ summary: 'Sync membership Odoo user credential' })
   async syncMembershipOdoo(
     @Param('code') code: string,
     @Param('id') id: string,
@@ -182,6 +248,7 @@ export class AdminController {
   }
 
   @Get('tenants/:code/roles')
+  @ApiOperation({ summary: 'List roles available in tenant' })
   async getTenantRoles(@Param('code') code: string) {
     return this.cpService.getTenantRoles(code);
   }

@@ -1,0 +1,850 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/admin/tenants": {
+      "get": {
+        "operationId": "AdminController_getTenants",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "List of tenants"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List all businesses/tenants with member counts and created date",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/features": {
+      "get": {
+        "operationId": "AdminController_getFeatures",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "List of feature definitions"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List all platform feature definitions",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/features": {
+      "get": {
+        "operationId": "AdminController_getTenantFeatures",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "description": "Tenant code (e.g. demo_fnb)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of tenant features with effective status"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get effective features and overrides for a tenant",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/features/{key}/platform": {
+      "put": {
+        "operationId": "AdminController_updatePlatformFeature",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "description": "Feature key (e.g. pos.devices)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Feature updated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update platform-wide feature toggle",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/features/{key}": {
+      "put": {
+        "operationId": "AdminController_updateTenantFeature",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "description": "Tenant code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "description": "Feature key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant feature updated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update tenant-level feature override (true, false, or null for default)",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/audit-log": {
+      "get": {
+        "operationId": "AdminController_getAuditLog",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "From ISO date",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "To ISO date",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "required": false,
+            "in": "query",
+            "description": "Filter by actor ID or email",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "description": "Filter by action name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number (default 1)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Page size (default 50)",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated audit logs"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get administrative audit log with filtering and pagination",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/accounts": {
+      "post": {
+        "operationId": "AdminController_createAccount",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create user account",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/memberships": {
+      "post": {
+        "operationId": "AdminController_createMembership",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add account membership to a tenant",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/accounts/{id}/password": {
+      "put": {
+        "operationId": "AdminController_resetPassword",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reset account password",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/memberships/{id}": {
+      "put": {
+        "operationId": "AdminController_updateMembership",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update tenant membership status and roles",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/memberships/{id}/odoo-sync": {
+      "post": {
+        "operationId": "AdminController_syncMembershipOdoo",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Sync membership Odoo user credential",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/admin/tenants/{code}/roles": {
+      "get": {
+        "operationId": "AdminController_getTenantRoles",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List roles available in tenant",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Login successful or MFA/Tenant selection required"
+          }
+        },
+        "summary": "Login with identifier (email/phone) and password",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/select-tenant": {
+      "post": {
+        "operationId": "AuthController_selectTenant",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tokens issued for selected tenant"
+          }
+        },
+        "summary": "Select active tenant after multi-tenant login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/totp": {
+      "post": {
+        "operationId": "AuthController_verifyTotp",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MFA verified, session tokens issued"
+          }
+        },
+        "summary": "Verify 6-digit TOTP code for Super Admin MFA",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tokens rotated and new access token issued"
+          }
+        },
+        "summary": "Refresh access token using refresh token",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Logged out successfully"
+          }
+        },
+        "summary": "Logout and revoke refresh token family",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "operationId": "AuthController_getMe",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User profile and permissions"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get current authenticated user info and roles",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/pos/pairing-codes": {
+      "post": {
+        "operationId": "PosDeviceController_createPairingCode",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/devices/pair": {
+      "post": {
+        "operationId": "PosDeviceController_pairDevice",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/devices": {
+      "get": {
+        "operationId": "PosDeviceController_listDevices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/devices/{id}": {
+      "delete": {
+        "operationId": "PosDeviceController_revokeDevice",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/me/pin": {
+      "put": {
+        "operationId": "PosDeviceController_setMyPin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/staff/{membership_id}/pin": {
+      "delete": {
+        "operationId": "PosDeviceController_resetStaffPin",
+        "parameters": [
+          {
+            "name": "membership_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/auth/pin": {
+      "post": {
+        "operationId": "PosDeviceController_loginWithPin",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/auth/refresh": {
+      "post": {
+        "operationId": "PosDeviceController_refreshPinSession",
+        "parameters": [
+          {
+            "name": "x-forwarded-for",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/roster": {
+      "get": {
+        "operationId": "PosDeviceController_getRoster",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/auth/device-session": {
+      "post": {
+        "operationId": "PosDeviceController_issueDeviceSession",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/pos/number-blocks": {
+      "post": {
+        "operationId": "PosDeviceController_allocateNumberBlock",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/v1/internal/memberships/{id}/permissions": {
+      "get": {
+        "operationId": "PosDeviceController_getMembershipPermissions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PosDevice"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "HealthController_getHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "ITESO Control Plane API",
+    "description": "ITESO Control Plane REST API for Super Admin, Auth & Tenancy",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {}
+  }
+}

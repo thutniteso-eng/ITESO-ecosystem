@@ -2,7 +2,6 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
-  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
@@ -11,43 +10,49 @@ import * as path from 'path';
 
 @Injectable()
 export class InternalTokenGuard implements CanActivate {
-  private internalToken: string | null = null;
+  private internalToken: string;
 
   constructor() {
-    this.loadToken();
+    this.internalToken = this.loadAndValidateToken();
   }
 
-  private loadToken(): void {
-    if (process.env.INTERNAL_API_TOKEN) {
-      this.internalToken = process.env.INTERNAL_API_TOKEN.trim();
-      return;
-    }
+  private loadAndValidateToken(): string {
+    let token = process.env.INTERNAL_API_TOKEN?.trim();
 
-    const tokenPath =
-      process.env.INTERNAL_API_TOKEN_PATH ||
-      path.resolve(__dirname, '../../../../infra/secrets/internal_api.token');
+    if (!token) {
+      const tokenPath =
+        process.env.INTERNAL_API_TOKEN_PATH ||
+        path.resolve(__dirname, '../../../../infra/secrets/internal_api.token');
 
-    if (fs.existsSync(tokenPath)) {
-      try {
-        this.internalToken = fs.readFileSync(tokenPath, 'utf8').trim();
-      } catch {
-        this.internalToken = null;
+      if (fs.existsSync(tokenPath)) {
+        try {
+          token = fs.readFileSync(tokenPath, 'utf8').trim();
+        } catch {
+          token = undefined;
+        }
       }
     }
+
+    if (!token) {
+      throw new Error(
+        'FATAL: Internal API token is not configured or not found. Service cannot start.',
+      );
+    }
+
+    const bufHex = Buffer.from(token, 'hex');
+    const bufRaw = Buffer.from(token, 'utf8');
+    const is32Bytes = (token.length === 64 && bufHex.length === 32) || bufRaw.length === 32;
+
+    if (!is32Bytes) {
+      throw new Error(
+        `FATAL: Internal API token must be exactly 32 bytes (got ${bufRaw.length} raw bytes / length ${token.length}). Service cannot start.`,
+      );
+    }
+
+    return token;
   }
 
   canActivate(context: ExecutionContext): boolean {
-    if (!this.internalToken) {
-      this.loadToken();
-    }
-
-    if (!this.internalToken) {
-      throw new InternalServerErrorException({
-        error: 'INTERNAL_TOKEN_NOT_CONFIGURED',
-        message: 'Internal API token is not configured on server',
-      });
-    }
-
     const request = context.switchToHttp().getRequest();
     const headerToken = request.headers['x-internal-token'];
 

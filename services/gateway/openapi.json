@@ -1,0 +1,422 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "HealthController_getHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/v1/odoo/version": {
+      "get": {
+        "operationId": "OdooController_getVersion",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Odoo version details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get Odoo version info for authenticated tenant",
+        "tags": [
+          "Odoo"
+        ]
+      }
+    },
+    "/v1/features": {
+      "get": {
+        "operationId": "FeaturesController_getFeatures",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "List of active feature keys"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get active features enabled for the authenticated tenant",
+        "tags": [
+          "Features"
+        ]
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "AuthProxyController_login",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/auth/select-tenant": {
+      "post": {
+        "operationId": "AuthProxyController_selectTenant",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/auth/totp": {
+      "post": {
+        "operationId": "AuthProxyController_totp",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "AuthProxyController_refresh",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "AuthProxyController_logout",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "operationId": "AuthProxyController_getMe",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/pairing-codes": {
+      "post": {
+        "operationId": "AuthProxyController_createPairingCode",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/devices/pair": {
+      "post": {
+        "operationId": "AuthProxyController_pairDevice",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/devices": {
+      "get": {
+        "operationId": "AuthProxyController_listDevices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/devices/{id}": {
+      "delete": {
+        "operationId": "AuthProxyController_revokeDevice",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/me/pin": {
+      "put": {
+        "operationId": "AuthProxyController_setMyPin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/staff/{membership_id}/pin": {
+      "delete": {
+        "operationId": "AuthProxyController_resetStaffPin",
+        "parameters": [
+          {
+            "name": "membership_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/auth/pin": {
+      "post": {
+        "operationId": "AuthProxyController_loginWithPin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/auth/refresh": {
+      "post": {
+        "operationId": "AuthProxyController_refreshPinSession",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/roster": {
+      "get": {
+        "operationId": "AuthProxyController_getRoster",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/auth/device-session": {
+      "post": {
+        "operationId": "AuthProxyController_issueDeviceSession",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/pos/number-blocks": {
+      "post": {
+        "operationId": "AuthProxyController_allocateNumberBlock",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AuthProxy"
+        ]
+      }
+    },
+    "/v1/sync/push": {
+      "post": {
+        "operationId": "SyncController_push",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Batch operation results"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Push offline operations ledger batch from POS device",
+        "tags": [
+          "Sync"
+        ]
+      }
+    },
+    "/v1/sync/pull": {
+      "get": {
+        "operationId": "SyncController_pull",
+        "parameters": [
+          {
+            "name": "dataset",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot_after_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot_until_outbox_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Sync"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "ITESO Gateway API",
+    "description": "ITESO API Gateway for Business Tenants, POS & Offline Sync",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {}
+  }
+}

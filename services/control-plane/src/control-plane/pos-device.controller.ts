@@ -12,10 +12,12 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { PosDeviceService } from './pos-device.service';
 import { TokenService } from '../auth/token.service';
 import { InternalTokenGuard } from '../auth/internal-token.guard';
 
+@ApiTags('PosDevice')
 @Controller('v1')
 export class PosDeviceController {
   constructor(

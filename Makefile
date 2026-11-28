@@ -48,10 +48,12 @@ create-platform-admin:
 test:
 	pnpm --filter @iteso/control-plane test
 	pnpm --filter @iteso/gateway test
+	pnpm --filter @iteso/admin-web test
 	./scripts/test-db-isolation.sh
 	./scripts/test-odoo-module.sh
 	node ./scripts/test-acceptance-criteria.js
 	node ./scripts/test-acceptance-criteria-task006.js
+
 
 ps:
 	$(COMPOSE) ps

@@ -98,6 +98,7 @@ services:
       ODOO_MEMBER_KEY_TTL_DAYS: ${ODOO_MEMBER_KEY_TTL_DAYS:-90}
       ODOO_URL: http://odoo:8069
       INTERNAL_API_TOKEN_PATH: /app/secrets/internal_api.token
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-}
     volumes:
       - ./secrets/ed25519_private.pem:/app/secrets/ed25519_private.pem:ro
       - ./secrets/ed25519_public.pem:/app/secrets/ed25519_public.pem:ro
@@ -156,6 +157,36 @@ services:
       - "127.0.0.1:${GATEWAY_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - iteso_internal
+
+  admin-web:
+    build:
+      context: ..
+      dockerfile: apps/admin-web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      CONTROL_PLANE_URL: http://control-plane:3100
+      GATEWAY_URL: http://gateway:3000
+      ADMIN_WEB_SESSION_KEY_PATH: /app/secrets/admin_web_session.key
+      SESSION_SECRET_PATH: /app/secrets/admin_web_session.key
+    volumes:
+      - ./secrets/admin_web_session.key:/app/secrets/admin_web_session.key:ro
+    ports:
+      - "127.0.0.1:${ADMIN_WEB_PORT:-3001}:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
