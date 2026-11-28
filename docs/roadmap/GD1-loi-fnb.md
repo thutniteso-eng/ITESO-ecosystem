@@ -1,6 +1,6 @@
 # Kế hoạch GĐ 1: Lõi F&B chạy được
 
-- Trạng thái: Đề xuất (chờ Product Owner duyệt)
+- Trạng thái: Đã duyệt (Product Owner, 28/11/2026)
 - Ngày: 28/11/2026
 - Căn cứ: Kế hoạch phát triển ITESO ECO SYSTEM (bảng "Chế độ chờ" và "Lộ trình"), ADR-001 đến ADR-007
 
@@ -53,7 +53,7 @@ Mỗi task là một PR, đi đúng quy trình: phiếu do anh duyệt, Antigrav
 | 008 | Quản trị doanh nghiệp: nhân viên, vai trò, chi nhánh, máy POS | Thêm nhân viên, gán vai trò, tạo mã ghép máy ngay trên web |
 | 009 | Lõi F&B trên Odoo: cài `point_of_sale`, `pos_restaurant`, module `iteso_fnb`; API thực đơn | Có dữ liệu thực đơn mẫu nhiều ngôn ngữ qua API |
 | 010 | Quản trị thực đơn và sơ đồ bàn trên web | Nhập món, giá, ảnh, topping, nhập từ Excel; vẽ khu vực và bàn |
-| 011 | App POS nền | Cài lên máy tính bảng Android: ghép máy, đăng nhập PIN, tải thực đơn, chạy offline |
+| 011 | App POS nền | Cài lên điện thoại Android: ghép máy, đăng nhập PIN, tải thực đơn, chạy offline |
 | 012 | Gọi món theo bàn | Mở bàn, thêm món, ghi chú, chuyển hoặc gộp bàn, kể cả khi mất mạng |
 | 013 | Thanh toán và ca | Tiền mặt, VietQR, chia hóa đơn, giảm giá; mở và đóng ca, báo cáo ca khớp tiền |
 | 014 | In ấn | In hóa đơn, phiếu bếp và phiếu bar ra máy in nhiệt; mẫu in nhiều ngôn ngữ |
@@ -69,7 +69,7 @@ Mỗi task là một PR, đi đúng quy trình: phiếu do anh duyệt, Antigrav
 
 Qua cổng mới sang GĐ 2:
 
-1. Trên laptop và ít nhất 1 máy tính bảng Android thật, chạy kịch bản "một ngày bán hàng" của nhà hàng mẫu:
+1. Trên laptop và ít nhất 1 điện thoại Android thật, chạy kịch bản "một ngày bán hàng" của nhà hàng mẫu:
    - 3 máy POS, 50 đơn;
    - 1 máy mất mạng 2 giờ giữa ca;
    - bếp nhận đủ món;
@@ -80,8 +80,8 @@ Qua cổng mới sang GĐ 2:
 3. Tắt một tính năng (ví dụ QR order) cho tenant demo thì tính năng đó biến mất khỏi app và web.
 4. CI xanh; mọi kịch bản nghiệm thu của GĐ 0 vẫn đạt.
 
-## Cần anh quyết
+## Quyết định của Product Owner (28/11/2026)
 
-1. **Thiết bị POS mục tiêu.** Tôi đề xuất: máy tính bảng Android 10 inch phổ thông cho thu ngân, và điện thoại Android cho phục vụ gọi món tại bàn. Máy POS Android có máy in liền (loại Sunmi) để hỗ trợ sau, ở GĐ 2.
-2. **Thứ tự** như bảng trên, trang quản trị web làm trước.
-3. **Cổng nghiệm thu** như trên.
+1. **Thiết bị POS:** đồng ý hướng đề xuất, nhưng **làm cho điện thoại Android trước** (cả thu ngân lẫn phục vụ). Máy tính bảng 10 inch và máy POS có máy in liền (loại Sunmi) để sau.
+2. **Thứ tự:** đồng ý, làm trang quản trị web trước.
+3. **Cổng nghiệm thu:** duyệt, nghiệm thu trên điện thoại Android thật.
