@@ -24,7 +24,7 @@ ENV HOSTNAME="0.0.0.0"
 
 COPY --from=builder /app/apps/admin-web/.next/standalone ./
 COPY --from=builder /app/apps/admin-web/.next/static ./apps/admin-web/.next/static
-COPY --from=builder /app/apps/admin-web/public ./apps/admin-web/public
+COPY apps/admin-web/public ./apps/admin-web/public
 
 USER node
 EXPOSE 3001

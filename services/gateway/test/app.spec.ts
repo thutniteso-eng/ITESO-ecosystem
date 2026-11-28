@@ -48,6 +48,9 @@ describe('Gateway endpoints (TASK-003)', () => {
   const testKid = 'iteso-ed25519-key-1';
 
   beforeAll(async () => {
+    process.env.INTERNAL_API_TOKEN =
+      process.env.INTERNAL_API_TOKEN ||
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     // Generate valid test keypair
     const pair = crypto.generateKeyPairSync('ed25519');
     testPrivateKey = await jose.importPKCS8(
