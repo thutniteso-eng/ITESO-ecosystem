@@ -1,6 +1,6 @@
 # ADR-008: Giao diện — trang quản trị web và app POS
 
-- Trạng thái: Đề xuất (chờ Product Owner duyệt)
+- Trạng thái: Đã duyệt (Product Owner, 28/11/2026)
 - Ngày: 28/11/2026
 - Liên quan: ADR-004, ADR-005, ADR-007; Kế hoạch GĐ 1 (đã duyệt)
 
