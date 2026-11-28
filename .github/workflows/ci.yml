@@ -110,6 +110,7 @@ jobs:
 
           # 3. Acceptance criteria integration verification
           node scripts/test-acceptance-criteria.js
+          node scripts/test-acceptance-criteria-task006.js
 
       - name: Tear down Compose stack
         if: always()

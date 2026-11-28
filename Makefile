@@ -51,6 +51,7 @@ test:
 	./scripts/test-db-isolation.sh
 	./scripts/test-odoo-module.sh
 	node ./scripts/test-acceptance-criteria.js
+	node ./scripts/test-acceptance-criteria-task006.js
 
 ps:
 	$(COMPOSE) ps

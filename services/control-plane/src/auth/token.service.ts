@@ -198,10 +198,12 @@ export class TokenService implements OnModuleInit, OnModuleDestroy {
   }
 
   async signRosterJws(payload: Record<string, unknown>): Promise<string> {
-    const jwt = new jose.SignJWT(payload)
+    const jti = (payload.jti as string) || crypto.randomUUID();
+    const jwt = new jose.SignJWT({ ...payload, jti })
       .setProtectedHeader({ alg: 'EdDSA', kid: this.kid })
       .setIssuer('iteso-control-plane')
       .setAudience('iteso-pos')
+      .setJti(jti)
       .setIssuedAt()
       .setExpirationTime('24h');
 

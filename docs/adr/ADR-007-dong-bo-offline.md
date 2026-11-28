@@ -62,3 +62,23 @@ Máy POS phải bán được khi mất mạng cả buổi, rồi tự đồng b
   - Dữ liệu đọc lúc offline có thể cũ: giá lấy theo bản đã tải, và đơn ghi lại giá đã dùng.
   - Gateway được đọc thêm sổ cấp roster.
 - **Triển khai:** TASK-006 làm phần móng, thử với `contact.create` và dataset `contacts`. Đơn hàng POS làm ở GĐ 1.
+
+## Bổ sung khi triển khai (28/11/2026 — Vòng 2 TASK-006)
+
+1. **Trạng thái thứ tư `retry` cho lỗi tạm thời:**
+   - Các trạng thái thao tác gồm: `applied`, `rejected`, `needs_review`, và `retry`.
+   - Khi nhận trạng thái `retry`, máy POS giữ thao tác trong hàng đợi offline và gửi lại sau khi đường truyền hoặc dịch vụ sẵn sàng.
+   - **Odoo:** Chỉ ghi nhận `rejected` vào sổ cái (`iteso.sync.operation`) đối với các lỗi nghiệp vụ xác định (`INVALID_NAME`, `UNKNOWN_OP_TYPE`, vi phạm ràng buộc dữ liệu). Mọi exception bất ngờ (mất kết nối, lỗi tạm thời hạ tầng, xung đột đồng thời `op_id` giữa hai lô gửi cùng lúc) sẽ rollback savepoint, **không ghi sổ** và trả về `status: "retry"` kèm mã lỗi ngắn (`TEMPORARY_ERROR`, `CONCURRENT_OP`), tuyệt đối không để lộ `str(exc)`.
+   - **Gateway:** Các lỗi hạ tầng (DB timeout, Odoo 5xx, timeout kết nối) trả về `retry`. Lý do `MEMBER_DISABLED` chỉ được trả về khi người dùng Odoo của thành viên thực sự ở trạng thái vô hiệu hóa.
+
+2. **Phân trang snapshot khi tải toàn bộ (`cursor = 0`):**
+   - Hỗ trợ phân trang snapshot bằng `snapshot_after_id` và cờ `has_more` (kích thước trang tối đa 500 bản ghi).
+   - `next_cursor` được chốt bằng ID outbox lớn nhất tại thời điểm bắt đầu snapshot (`snapshot_until_outbox_id`) và chỉ được trả về ở trang cuối cùng (`has_more = false`). Điều này đảm bảo toàn bộ dữ liệu tải về đầy đủ, không trùng, không sót kể cả khi có bản ghi bị sửa đổi trong quá trình tải snapshot.
+
+3. **Bảo mật API nội bộ và quản lý khóa Odoo của thiết bị:**
+   - Tuyệt đối không truyền API key Odoo dạng rõ qua mạng nội bộ. Khóa Odoo của máy POS được mã hóa bằng `odoo_credentials.key` và lưu tại bảng `device_odoo_users` (theo mẫu `membership_odoo_users`). Gateway đọc và giải mã cục bộ; khi máy bị thu hồi, control-plane phát sự kiện NATS `platform.odoo_credentials.changed` để Gateway xóa cache.
+   - Toàn bộ các route `/v1/internal/*` còn lại (ví dụ đọc quyền thành viên) bắt buộc kèm header `X-Internal-Token` (token bí mật 32 byte sinh bởi `scripts/generate-keys.sh` vào `infra/secrets/internal_api.token`), so sánh constant-time bằng `crypto.timingSafeEqual`; thiếu hoặc sai trả về HTTP 401.
+
+4. **Phân quyền chặt chẽ trên outbox:**
+   - Nhóm người dùng thông thường (`base.group_user`) chỉ có quyền đọc (`r`) trên model `iteso.outbox`, không có quyền tạo (`c`).
+   - Việc ghi outbox được thực hiện hoàn toàn qua ORM hooks bằng quyền `sudo()`, loại bỏ nguy cơ thành viên tự chèn dòng outbox giả mạo.

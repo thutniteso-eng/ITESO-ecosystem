@@ -65,6 +65,8 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
     { key: 'system.auth', group: 'system', description: 'Đăng nhập và phân quyền hệ thống', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
     // TASK-005 available features
     { key: 'pos.devices', group: 'pos', description: 'Quản lý máy POS và phiên PIN', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
+    // TASK-006 available features
+    { key: 'sync.offline', group: 'sync', description: 'Đồng bộ ngoại tuyến', implementationStatus: 'available' as const, platformEnabled: true, defaultEnabled: true },
   ];
 
   for (const feat of features) {
@@ -312,10 +314,10 @@ export async function seedDatabase(pgPool: Pool): Promise<void> {
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'iteso_gateway') THEN
         GRANT USAGE ON SCHEMA public TO iteso_gateway;
-        GRANT SELECT ON TABLE "tenants", "feature_definitions", "tenant_features" TO iteso_gateway;
+        GRANT SELECT ON TABLE "tenants", "feature_definitions", "tenant_features", "pos_roster_issues" TO iteso_gateway;
         GRANT SELECT (membership_id, tenant_id, odoo_uid, api_key_enc, key_expires_at, status) ON TABLE "membership_odoo_users" TO iteso_gateway;
         GRANT SELECT (id, tenant_id, branch_id, status) ON TABLE "pos_devices" TO iteso_gateway;
-        REVOKE ALL ON TABLE "admin_audit_log", "accounts", "permissions", "roles", "role_permissions", "memberships", "membership_roles", "refresh_tokens", "tenant_odoo_system_keys", "branches", "pos_pairing_codes", "membership_pins" FROM iteso_gateway;
+        REVOKE ALL ON TABLE "admin_audit_log", "accounts", "permissions", "roles", "role_permissions", "memberships", "membership_roles", "refresh_tokens", "tenant_odoo_system_keys", "branches", "pos_pairing_codes", "membership_pins", "device_number_blocks" FROM iteso_gateway;
       END IF;
     END $$;
   `);

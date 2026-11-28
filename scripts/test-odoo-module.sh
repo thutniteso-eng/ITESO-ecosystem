@@ -35,31 +35,33 @@ trap cleanup EXIT
 echo "[test-odoo-module] Dropping any leftover '${TEST_DB}'..."
 cleanup
 
-echo "[test-odoo-module] Installing 'iteso_base' into fresh database '${TEST_DB}'..."
+echo "[test-odoo-module] Installing 'iteso_base' and 'iteso_sync' into fresh database '${TEST_DB}'..."
 compose exec -T odoo odoo \
   -c /tmp/odoo.conf \
   -d "$TEST_DB" \
-  -i iteso_base \
+  -i iteso_base,iteso_sync \
   --stop-after-init \
   --no-http
 
 # Secure test tenant DB using shared helper script
 "$ROOT_DIR/scripts/lib/secure-tenant-db.sh" "$TEST_DB"
 
-STATE="$(compose exec -T postgres psql -U "$PG_USER" -d "$TEST_DB" -tAc "SELECT state FROM ir_module_module WHERE name = 'iteso_base'" | tr -d '[:space:]')"
-if [ "$STATE" != "installed" ]; then
-  echo "ERROR: expected iteso_base state='installed', got '${STATE}'" >&2
-  exit 1
-fi
-echo "[test-odoo-module] PASS: iteso_base installed cleanly in '${TEST_DB}' (state=${STATE})."
+for MOD in iteso_base iteso_sync; do
+  STATE="$(compose exec -T postgres psql -U "$PG_USER" -d "$TEST_DB" -tAc "SELECT state FROM ir_module_module WHERE name = '$MOD'" | tr -d '[:space:]')"
+  if [ "$STATE" != "installed" ]; then
+    echo "ERROR: expected $MOD state='installed', got '${STATE}'" >&2
+    exit 1
+  fi
+  echo "[test-odoo-module] PASS: $MOD installed cleanly in '${TEST_DB}' (state=${STATE})."
+done
 
-echo "[test-odoo-module] Running automated unit tests (--test-enable --test-tags /iteso_base)..."
+echo "[test-odoo-module] Running automated unit tests (--test-enable --test-tags /iteso_base,/iteso_sync)..."
 compose exec -T odoo odoo \
   -c /tmp/odoo.conf \
   -d "$TEST_DB" \
   --test-enable \
-  --test-tags /iteso_base \
+  --test-tags /iteso_base,/iteso_sync \
   --stop-after-init \
   --no-http
 
-echo "[test-odoo-module] ALL TESTS PASSED for iteso_base."
+echo "[test-odoo-module] ALL TESTS PASSED for iteso_base and iteso_sync."

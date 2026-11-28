@@ -1,0 +1,6 @@
+id,name,model_id,group_id/id,operation,domain
+access_res_partner_group_user_create,res.partner group_user create,res.partner,base.group_user,c,
+access_iteso_sync_operation_user,Sync Operation User,iteso.sync.operation,base.group_user,cr,
+access_iteso_sync_operation_system,Sync Operation System,iteso.sync.operation,base.group_system,crud,
+access_iteso_outbox_user,Outbox User,iteso.outbox,base.group_user,r,
+access_iteso_outbox_system,Outbox System,iteso.outbox,base.group_system,crud,

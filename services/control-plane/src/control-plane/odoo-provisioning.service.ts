@@ -430,6 +430,152 @@ export class OdooProvisioningService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async provisionDeviceUser(
+    tenantId: string,
+    deviceId: string,
+    deviceName: string,
+  ): Promise<{ odooUid: number; apiKey: string }> {
+    const tenant = await this.db.query.tenants.findFirst({
+      where: eq(schema.tenants.id, tenantId),
+    });
+    if (!tenant || !tenant.dbName) {
+      throw new Error(`Tenant '${tenantId}' has no Odoo database`);
+    }
+
+    const sysKeyRow = await this.db.query.tenantOdooSystemKeys.findFirst({
+      where: eq(schema.tenantOdooSystemKeys.tenantId, tenant.id),
+    });
+    if (!sysKeyRow) {
+      throw new Error(`Tenant '${tenantId}' has no Odoo system key`);
+    }
+
+    const systemKey = decryptAesGcm(sysKeyRow.keyEnc, this.platformEncKey);
+    const membershipId = `device-${deviceId}`;
+    const displayName = `POS Device: ${deviceName}`;
+
+    const provRes = await this.callOdooJson2(
+      tenant.dbName,
+      systemKey,
+      'iteso.provisioning',
+      'provision_member',
+      {
+        membership_id: membershipId,
+        name: displayName,
+        group_xmlids: ['base.group_user'],
+      },
+    );
+
+    interface OdooCallResult {
+      result?: { uid?: number; key?: string; expires_at?: string };
+      uid?: number;
+      key?: string;
+      expires_at?: string;
+    }
+    const typedProvRes = provRes as OdooCallResult;
+    const uid = typedProvRes?.result?.uid ?? typedProvRes?.uid;
+    const ttlDays = 365;
+    const keyRes = await this.callOdooJson2(
+      tenant.dbName,
+      systemKey,
+      'iteso.provisioning',
+      'issue_member_key',
+      {
+        uid,
+        ttl_days: ttlDays,
+      },
+    );
+
+    const typedKeyRes = keyRes as OdooCallResult;
+    const rawKey = typedKeyRes?.result?.key ?? typedKeyRes?.key;
+    const expiresAtStr = typedKeyRes?.result?.expires_at ?? typedKeyRes?.expires_at;
+
+    if (!uid || !rawKey) {
+      throw new Error(`Failed to provision Odoo device user for device ${deviceId}`);
+    }
+
+    const keyExpiresAt = expiresAtStr
+      ? new Date(expiresAtStr)
+      : new Date(Date.now() + ttlDays * 86400000);
+    const apiKeyEnc = encryptAesGcm(rawKey, this.odooCredentialsKey);
+
+    await this.db
+      .insert(schema.deviceOdooUsers)
+      .values({
+        deviceId,
+        tenantId,
+        odooUid: uid,
+        odooLogin: membershipId,
+        apiKeyEnc,
+        keyExpiresAt,
+        status: 'active',
+        lastError: null,
+        syncedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: schema.deviceOdooUsers.deviceId,
+        set: {
+          odooUid: uid,
+          odooLogin: membershipId,
+          apiKeyEnc,
+          keyExpiresAt,
+          status: 'active',
+          lastError: null,
+          syncedAt: new Date(),
+        },
+      });
+
+    await this.natsService.publish('platform.odoo_credentials.changed', {
+      device_id: deviceId,
+    });
+
+    return { odooUid: uid, apiKey: rawKey };
+  }
+
+  async disableDeviceUser(tenantId: string, deviceId: string): Promise<void> {
+    const deviceOdoo = await this.db.query.deviceOdooUsers.findFirst({
+      where: eq(schema.deviceOdooUsers.deviceId, deviceId),
+    });
+    if (!deviceOdoo) return;
+
+    if (deviceOdoo.odooUid) {
+      const tenant = await this.db.query.tenants.findFirst({
+        where: eq(schema.tenants.id, tenantId),
+      });
+      if (tenant?.dbName) {
+        const sysKeyRow = await this.db.query.tenantOdooSystemKeys.findFirst({
+          where: eq(schema.tenantOdooSystemKeys.tenantId, tenant.id),
+        });
+        if (sysKeyRow) {
+          try {
+            const systemKey = decryptAesGcm(sysKeyRow.keyEnc, this.platformEncKey);
+            await this.callOdooJson2(
+              tenant.dbName,
+              systemKey,
+              'iteso.provisioning',
+              'disable_member',
+              { uid: deviceOdoo.odooUid },
+            );
+          } catch (e) {
+            console.warn(`[OdooProvisioningService] Error disabling Odoo user for device ${deviceId}:`, e);
+          }
+        }
+      }
+    }
+
+    await this.db
+      .update(schema.deviceOdooUsers)
+      .set({
+        apiKeyEnc: null,
+        status: 'disabled',
+        syncedAt: new Date(),
+      })
+      .where(eq(schema.deviceOdooUsers.deviceId, deviceId));
+
+    await this.natsService.publish('platform.odoo_credentials.changed', {
+      device_id: deviceId,
+    });
+  }
+
   private async saveRecordStatus(
     membershipId: string,
     tenantId: string,

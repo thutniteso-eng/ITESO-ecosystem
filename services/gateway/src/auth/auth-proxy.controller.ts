@@ -208,4 +208,21 @@ export class AuthProxyController {
   async getRoster(@Req() req: Request, @Res() res: Response) {
     return this.forwardRequest('GET', '/v1/pos/roster', null, req.headers, req, res);
   }
+
+  // TASK-006: Device session token & number blocks proxying
+  @Post('pos/auth/device-session')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @Public()
+  async issueDeviceSession(@Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/auth/device-session', null, req.headers, req, res);
+  }
+
+  @Post('pos/number-blocks')
+  @HttpCode(HttpStatus.OK)
+  @RequireFeature('pos.devices')
+  @Public()
+  async allocateNumberBlock(@Body() body: unknown, @Req() req: Request, @Res() res: Response) {
+    return this.forwardPost('/v1/pos/number-blocks', body, req.headers, req, res);
+  }
 }
