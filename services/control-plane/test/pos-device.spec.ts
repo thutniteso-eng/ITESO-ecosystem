@@ -379,5 +379,34 @@ describe('TASK-005 & TASK-006: Control Plane PosDeviceService & PIN Unit Tests',
 
       expect(guard.canActivate(mockContext)).toBe(true);
     });
+
+    it('throws fatal error during construction if token is missing or not 32 bytes (TASK-007 backlog)', () => {
+      const origEnv = process.env.INTERNAL_API_TOKEN;
+      const origPath = process.env.INTERNAL_API_TOKEN_PATH;
+      try {
+        process.env.INTERNAL_API_TOKEN_PATH = '/nonexistent/token/path';
+        delete process.env.INTERNAL_API_TOKEN;
+
+        expect(() => new InternalTokenGuard()).toThrow(
+          /FATAL: Internal API token is not configured or not found/,
+        );
+
+        process.env.INTERNAL_API_TOKEN = 'short-token-invalid';
+        expect(() => new InternalTokenGuard()).toThrow(
+          /FATAL: Internal API token must be exactly 32 bytes/,
+        );
+      } finally {
+        if (origEnv !== undefined) {
+          process.env.INTERNAL_API_TOKEN = origEnv;
+        } else {
+          delete process.env.INTERNAL_API_TOKEN;
+        }
+        if (origPath !== undefined) {
+          process.env.INTERNAL_API_TOKEN_PATH = origPath;
+        } else {
+          delete process.env.INTERNAL_API_TOKEN_PATH;
+        }
+      }
+    });
   });
 });

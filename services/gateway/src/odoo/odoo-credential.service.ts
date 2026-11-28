@@ -186,10 +186,7 @@ export class OdooCredentialService implements OnModuleInit, OnModuleDestroy {
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to decrypt Odoo key for membership ${membershipId}: ${errMsg}`);
-      throw new ForbiddenException({
-        error: 'ODOO_USER_NOT_PROVISIONED',
-        message: 'Failed to decrypt member Odoo API key',
-      });
+      throw new Error(`KEY_DECRYPTION_FAILED: ${errMsg}`);
     }
 
     const cred: CachedCredential = {

@@ -1,0 +1,105 @@
+{
+  "brand": "ITESO Admin",
+  "login": {
+    "title": "System Login",
+    "subtitle": "ITESO Platform & Enterprise Management",
+    "identifier": "Email or Phone Number",
+    "identifierPlaceholder": "admin@platform.local or 0901234567",
+    "password": "Password",
+    "passwordPlaceholder": "••••••••",
+    "submit": "Login",
+    "submitting": "Authenticating...",
+    "mfaTitle": "Two-Factor Authentication (MFA)",
+    "mfaSubtitle": "Enter 6-digit code from your authenticator app",
+    "mfaCode": "6-digit code",
+    "mfaCodePlaceholder": "123456",
+    "mfaSubmit": "Verify Code",
+    "selectTenantTitle": "Select Business",
+    "selectTenantSubtitle": "Your account belongs to multiple businesses",
+    "selectTenantSubmit": "Continue",
+    "errors": {
+      "invalidCredentials": "Incorrect login credentials",
+      "accountLocked": "Account temporarily locked. Please try again later.",
+      "invalidOtp": "Invalid or expired 6-digit code",
+      "sessionExpired": "Session expired. Please log in again.",
+      "forbidden": "Access denied",
+      "unknown": "An error occurred. Please try again later."
+    }
+  },
+  "nav": {
+    "platform": "Super Admin Dashboard",
+    "tenants": "Businesses",
+    "features": "Platform Features",
+    "auditLog": "Audit Logs",
+    "logout": "Logout",
+    "overview": "Overview",
+    "staff": "Staff (Coming soon)",
+    "pos": "POS Devices (Coming soon)",
+    "settings": "Settings (Coming soon)"
+  },
+  "platform": {
+    "title": "ITESO Platform Admin",
+    "tenants": {
+      "title": "Business Tenants",
+      "code": "Code",
+      "name": "Name",
+      "status": "Status",
+      "members": "Members",
+      "createdAt": "Created At",
+      "actions": "Actions",
+      "manageFeatures": "Manage Features",
+      "active": "Active",
+      "suspended": "Suspended"
+    },
+    "features": {
+      "title": "Platform Features",
+      "group": "Group",
+      "key": "Feature Key",
+      "description": "Description",
+      "status": "Status",
+      "platformToggle": "Platform Toggle",
+      "available": "Available",
+      "notImplemented": "Not implemented",
+      "successUpdated": "Feature updated successfully"
+    },
+    "tenantFeatures": {
+      "title": "Tenant Features",
+      "effectiveStatus": "Effective Status",
+      "override": "Override Setting",
+      "default": "Default",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "save": "Save changes"
+    },
+    "audit": {
+      "title": "Audit Logs",
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "note": "Note",
+      "filter": "Filter",
+      "from": "From Date",
+      "to": "To Date",
+      "search": "Search",
+      "reset": "Reset",
+      "page": "Page",
+      "prev": "Prev",
+      "next": "Next",
+      "empty": "No audit records found"
+    }
+  },
+  "tenant": {
+    "greeting": "Hello",
+    "welcome": "Welcome to your business management portal",
+    "businessName": "Business",
+    "role": "Role",
+    "activeFeatures": "Enabled Features",
+    "comingSoon": "Feature coming in upcoming releases."
+  },
+  "common": {
+    "forbiddenTitle": "403 - Forbidden",
+    "forbiddenDesc": "You do not have permission to access this area.",
+    "backToHome": "Back to Home"
+  }
+}

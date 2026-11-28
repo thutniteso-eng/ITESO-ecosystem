@@ -1,0 +1,105 @@
+{
+  "brand": "ITESO Quản trị",
+  "login": {
+    "title": "Đăng nhập hệ thống",
+    "subtitle": "Hệ thống quản lý nền tảng và doanh nghiệp ITESO",
+    "identifier": "Email hoặc Số điện thoại",
+    "identifierPlaceholder": "admin@platform.local hoặc 0901234567",
+    "password": "Mật khẩu",
+    "passwordPlaceholder": "••••••••",
+    "submit": "Đăng nhập",
+    "submitting": "Đang xác thực...",
+    "mfaTitle": "Xác thực hai bước (MFA)",
+    "mfaSubtitle": "Nhập mã 6 chữ số từ ứng dụng Google Authenticator",
+    "mfaCode": "Mã xác thực 6 số",
+    "mfaCodePlaceholder": "123456",
+    "mfaSubmit": "Xác nhận mã",
+    "selectTenantTitle": "Chọn doanh nghiệp",
+    "selectTenantSubtitle": "Tài khoản của bạn thuộc nhiều doanh nghiệp",
+    "selectTenantSubmit": "Truy cập doanh nghiệp",
+    "errors": {
+      "invalidCredentials": "Thông tin đăng nhập không chính xác",
+      "accountLocked": "Tài khoản bị tạm khóa do nhập sai nhiều lần. Vui lòng thử lại sau.",
+      "invalidOtp": "Mã xác thực 6 số không đúng hoặc đã hết hạn",
+      "sessionExpired": "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại",
+      "forbidden": "Bạn không có quyền truy cập khu vực này",
+      "unknown": "Đã xảy ra lỗi không xác định, vui lòng thử lại sau"
+    }
+  },
+  "nav": {
+    "platform": "Bảng điều khiển Super Admin",
+    "tenants": "Doanh nghiệp",
+    "features": "Tính năng nền tảng",
+    "auditLog": "Nhật ký quản trị",
+    "logout": "Đăng xuất",
+    "overview": "Tổng quan",
+    "staff": "Nhân viên (Sắp có)",
+    "pos": "Thiết bị POS (Sắp có)",
+    "settings": "Cài đặt (Sắp có)"
+  },
+  "platform": {
+    "title": "Quản trị Nền tảng ITESO",
+    "tenants": {
+      "title": "Danh sách Doanh nghiệp",
+      "code": "Mã",
+      "name": "Tên doanh nghiệp",
+      "status": "Trạng thái",
+      "members": "Thành viên",
+      "createdAt": "Ngày tạo",
+      "actions": "Thao tác",
+      "manageFeatures": "Quản lý tính năng",
+      "active": "Hoạt động",
+      "suspended": "Tạm dừng"
+    },
+    "features": {
+      "title": "Tính năng toàn nền tảng",
+      "group": "Nhóm",
+      "key": "Mã tính năng",
+      "description": "Mô tả",
+      "status": "Trạng thái kỹ thuật",
+      "platformToggle": "Bật/Tắt nền tảng",
+      "available": "Sẵn sàng",
+      "notImplemented": "Chưa có",
+      "successUpdated": "Cập nhật tính năng thành công"
+    },
+    "tenantFeatures": {
+      "title": "Tính năng Doanh nghiệp",
+      "effectiveStatus": "Đang có hiệu lực",
+      "override": "Lựa chọn cấu hình",
+      "default": "Theo mặc định",
+      "enabled": "Bật",
+      "disabled": "Tắt",
+      "save": "Lưu thay đổi"
+    },
+    "audit": {
+      "title": "Nhật ký Thao tác Quản trị",
+      "time": "Thời gian",
+      "actor": "Người thực hiện",
+      "action": "Loại thao tác",
+      "target": "Mục tiêu",
+      "note": "Ghi chú",
+      "filter": "Bộ lọc",
+      "from": "Từ ngày",
+      "to": "Đến ngày",
+      "search": "Tìm kiếm",
+      "reset": "Đặt lại",
+      "page": "Trang",
+      "prev": "Trước",
+      "next": "Sau",
+      "empty": "Không có dữ liệu nhật ký phù hợp"
+    }
+  },
+  "tenant": {
+    "greeting": "Xin chào",
+    "welcome": "Chào mừng bạn đến với trang quản trị doanh nghiệp",
+    "businessName": "Doanh nghiệp",
+    "role": "Vai trò",
+    "activeFeatures": "Các tính năng đang kích hoạt",
+    "comingSoon": "Tính năng đang được phát triển ở các giai đoạn tiếp theo."
+  },
+  "common": {
+    "forbiddenTitle": "403 - Không có quyền truy cập",
+    "forbiddenDesc": "Khu vực này chỉ dành cho người dùng được cấp quyền.",
+    "backToHome": "Quay về trang chủ"
+  }
+}

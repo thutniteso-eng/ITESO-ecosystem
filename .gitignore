@@ -28,3 +28,10 @@ Thumbs.db
 # Generated infra runtime files
 infra/odoo/odoo.runtime.conf
 infra/secrets/
+
+test-results/
+playwright-report/
+
+
+apps/admin-web/.next/
+

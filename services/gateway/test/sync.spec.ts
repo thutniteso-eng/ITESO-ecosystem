@@ -252,17 +252,43 @@ describe('TASK-006 (Round 2): SyncService Unit Tests', () => {
       expect(results[0].error).toBe('ODOO_CALL_FAILED');
     });
 
-    it('returns retry ODOO_NO_RESPONSE when Odoo result misses op_id', async () => {
-      (odooService.executeJson2Call as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          result: [{ op_id: 'some-other-id', status: 'applied' }],
-        }),
-      });
+    it('returns retry CONFIGURATION_ERROR when key decryption fails (TASK-007 backlog)', async () => {
+      (credentialService.getMemberCredential as jest.Mock).mockRejectedValueOnce(
+        new Error('KEY_DECRYPTION_FAILED: Invalid authentication tag'),
+      );
 
       const { results } = await service.push(tenantCode, deviceId, [baseOp]);
       expect(results[0].status).toBe('retry');
-      expect(results[0].error).toBe('ODOO_NO_RESPONSE');
+      expect(results[0].error).toBe('CONFIGURATION_ERROR');
+    });
+
+    it('SyncService constructor throws fatal error if internal token is missing or not 32 bytes (TASK-007 backlog)', () => {
+      const origEnv = process.env.INTERNAL_API_TOKEN;
+      const origPath = process.env.INTERNAL_API_TOKEN_PATH;
+      try {
+        process.env.INTERNAL_API_TOKEN_PATH = '/nonexistent/path/token';
+        delete process.env.INTERNAL_API_TOKEN;
+
+        expect(() => new SyncService(platformService, credentialService, odooService)).toThrow(
+          /FATAL: Internal API token is not configured/,
+        );
+
+        process.env.INTERNAL_API_TOKEN = 'short-token';
+        expect(() => new SyncService(platformService, credentialService, odooService)).toThrow(
+          /FATAL: Internal API token must be exactly 32 bytes/,
+        );
+      } finally {
+        if (origEnv !== undefined) {
+          process.env.INTERNAL_API_TOKEN = origEnv;
+        } else {
+          delete process.env.INTERNAL_API_TOKEN;
+        }
+        if (origPath !== undefined) {
+          process.env.INTERNAL_API_TOKEN_PATH = origPath;
+        } else {
+          delete process.env.INTERNAL_API_TOKEN_PATH;
+        }
+      }
     });
   });
 });

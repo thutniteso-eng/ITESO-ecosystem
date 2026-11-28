@@ -12,11 +12,13 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { Response, Request } from 'express';
 import { RequireFeature } from '../features/require-feature.decorator';
 import { Public } from './public.decorator';
 import { RequirePermission } from './require-permission.decorator';
 
+@ApiTags('AuthProxy')
 @Controller('v1')
 export class AuthProxyController {
   private readonly controlPlaneUrl: string =

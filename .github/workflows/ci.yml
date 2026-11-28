@@ -40,6 +40,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify OpenAPI generated client sync
+        run: |
+          pnpm gen:api
+          git diff --exit-code packages/api-client
+
   compose-integration-ci:
     name: Compose Stack & Integration Scenarios
     runs-on: ubuntu-latest
@@ -111,6 +116,20 @@ jobs:
           # 3. Acceptance criteria integration verification
           node scripts/test-acceptance-criteria.js
           node scripts/test-acceptance-criteria-task006.js
+
+      - name: Install Playwright browsers and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests against live admin-web & compose stack
+        run: pnpm test:e2e
+
+      - name: Upload Playwright screenshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-web-screenshots
+          path: artifacts/admin-web-screenshots/
+          if-no-files-found: warn
 
       - name: Tear down Compose stack
         if: always()

@@ -59,7 +59,7 @@ export class SyncService {
   ) {
     this.controlPlaneUrl = (process.env.CONTROL_PLANE_URL || 'http://control-plane:3100').replace(/\/+$/, '');
 
-    let iToken: string | null = process.env.INTERNAL_API_TOKEN || null;
+    let iToken: string | null = process.env.INTERNAL_API_TOKEN?.trim() || null;
     const iTokenPath =
       process.env.INTERNAL_API_TOKEN_PATH ||
       path.resolve(__dirname, '../../../../infra/secrets/internal_api.token');
@@ -69,6 +69,19 @@ export class SyncService {
       } catch {
         iToken = null;
       }
+    }
+    if (!iToken) {
+      throw new Error(
+        'FATAL: Internal API token is not configured or not found in gateway. Service cannot start.',
+      );
+    }
+    const bufHex = Buffer.from(iToken, 'hex');
+    const bufRaw = Buffer.from(iToken, 'utf8');
+    const is32Bytes = (iToken.length === 64 && bufHex.length === 32) || bufRaw.length === 32;
+    if (!is32Bytes) {
+      throw new Error(
+        `FATAL: Internal API token must be exactly 32 bytes in gateway (got ${bufRaw.length} raw bytes / length ${iToken.length}). Service cannot start.`,
+      );
     }
     this.internalApiToken = iToken;
   }
@@ -230,11 +243,14 @@ export class SyncService {
             error: 'MEMBER_DISABLED',
           };
         } else {
-          this.logger.error(`Database error fetching member credential: ${err}`);
+          this.logger.error(`Error fetching member credential: ${err}`);
           results[i] = {
             op_id: op.op_id,
             status: 'retry',
-            error: 'INFRASTRUCTURE_ERROR',
+            error:
+              err instanceof Error && err.message.startsWith('KEY_DECRYPTION_FAILED')
+                ? 'CONFIGURATION_ERROR'
+                : 'INFRASTRUCTURE_ERROR',
           };
         }
         continue;

@@ -3,6 +3,7 @@ import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
 import { PlatformAdminGuard } from './auth/platform-admin.guard';
 import { TokenService } from './auth/token.service';
+import { InternalTokenGuard } from './auth/internal-token.guard';
 import { AdminController } from './control-plane/admin.controller';
 import { ControlPlaneService } from './control-plane/control-plane.service';
 import { OdooProvisioningService } from './control-plane/odoo-provisioning.service';
@@ -17,6 +18,7 @@ import { NatsService } from './nats/nats.service';
     AuthService,
     TokenService,
     PlatformAdminGuard,
+    InternalTokenGuard,
     ControlPlaneService,
     OdooProvisioningService,
     PosDeviceService,
@@ -26,6 +28,7 @@ import { NatsService } from './nats/nats.service';
     AuthService,
     TokenService,
     PlatformAdminGuard,
+    InternalTokenGuard,
     ControlPlaneService,
     OdooProvisioningService,
     PosDeviceService,

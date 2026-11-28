@@ -5,7 +5,7 @@ import {
   NotFoundException,
   OnModuleDestroy,
 } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from '../db/schema';
@@ -49,8 +49,97 @@ export class ControlPlaneService implements OnModuleDestroy {
     return { database, nats };
   }
 
-  async getTenants(): Promise<Array<typeof schema.tenants.$inferSelect>> {
-    return this.db.select().from(schema.tenants);
+  async getTenants(): Promise<
+    Array<
+      typeof schema.tenants.$inferSelect & {
+        memberCount: number;
+        member_count: number;
+      }
+    >
+  > {
+    const allTenants = await this.db.select().from(schema.tenants);
+    const memberCounts = await this.db
+      .select({
+        tenantId: schema.memberships.tenantId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.memberships)
+      .where(eq(schema.memberships.status, 'active'))
+      .groupBy(schema.memberships.tenantId);
+
+    const countMap = new Map(memberCounts.map((m) => [m.tenantId, m.count]));
+    return allTenants.map((t) => {
+      const count = countMap.get(t.id) ?? 0;
+      return {
+        ...t,
+        memberCount: count,
+        member_count: count,
+      };
+    });
+  }
+
+  async getAuditLog(query: {
+    from?: string;
+    to?: string;
+    actor?: string;
+    action?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    data: Array<typeof schema.adminAuditLog.$inferSelect>;
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const page = Math.max(1, Number(query.page || 1));
+    const limit = Math.max(1, Math.min(100, Number(query.limit || 50)));
+    const offset = (page - 1) * limit;
+
+    const conditions = [];
+    if (query.from) {
+      const fromDate = new Date(query.from);
+      if (!isNaN(fromDate.getTime())) {
+        conditions.push(gte(schema.adminAuditLog.createdAt, fromDate));
+      }
+    }
+    if (query.to) {
+      const toDate = new Date(query.to);
+      if (!isNaN(toDate.getTime())) {
+        conditions.push(lte(schema.adminAuditLog.createdAt, toDate));
+      }
+    }
+    if (query.actor) {
+      conditions.push(eq(schema.adminAuditLog.actor, query.actor));
+    }
+    if (query.action) {
+      conditions.push(eq(schema.adminAuditLog.action, query.action));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rows, totalResult] = await Promise.all([
+      this.db
+        .select()
+        .from(schema.adminAuditLog)
+        .where(whereClause)
+        .orderBy(desc(schema.adminAuditLog.createdAt))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.adminAuditLog)
+        .where(whereClause),
+    ]);
+
+    const total = totalResult[0]?.count ?? 0;
+    return {
+      data: rows,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async getFeatures(): Promise<Array<typeof schema.featureDefinitions.$inferSelect>> {
@@ -167,7 +256,7 @@ export class ControlPlaneService implements OnModuleDestroy {
   async updateTenantFeature(
     tenantCode: string,
     featureKey: string,
-    enabled: boolean,
+    enabled: boolean | null,
     note?: string,
     actor = 'super_admin',
   ): Promise<typeof schema.tenantFeatures.$inferSelect> {
@@ -208,6 +297,44 @@ export class ControlPlaneService implements OnModuleDestroy {
     });
 
     const beforeState = existing ? { ...existing } : null;
+
+    if (enabled === null) {
+      await this.db.transaction(async (tx) => {
+        await tx
+          .delete(schema.tenantFeatures)
+          .where(
+            and(
+              eq(schema.tenantFeatures.tenantId, tenant.id),
+              eq(schema.tenantFeatures.featureKey, featureKey),
+            ),
+          );
+
+        await tx.insert(schema.adminAuditLog).values({
+          actor,
+          action: 'UPDATE_TENANT_FEATURE',
+          targetType: 'tenant_feature',
+          targetId: `${tenantCode}:${featureKey}`,
+          before: beforeState,
+          after: null,
+          note: note ?? null,
+        });
+      });
+
+      await this.natsService.publish('platform.features.changed', {
+        tenant: tenantCode,
+        key: featureKey,
+      });
+
+      return {
+        tenantId: tenant.id,
+        featureKey,
+        enabled: null,
+        updatedBy: actor,
+        note: note ?? null,
+        updatedAt: new Date(),
+      } as unknown as typeof schema.tenantFeatures.$inferSelect;
+    }
+
     let saved: typeof schema.tenantFeatures.$inferSelect;
 
     await this.db.transaction(async (tx) => {

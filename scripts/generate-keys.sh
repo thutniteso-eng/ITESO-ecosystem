@@ -12,6 +12,7 @@ PUB_KEY="${SECRETS_DIR}/ed25519_public.pem"
 ENC_KEY="${SECRETS_DIR}/platform_encryption.key"
 ODOO_CREDS_KEY="${SECRETS_DIR}/odoo_credentials.key"
 INTERNAL_API_TOKEN="${SECRETS_DIR}/internal_api.token"
+ADMIN_WEB_SESSION_KEY="${SECRETS_DIR}/admin_web_session.key"
 
 if [ ! -f "${PRIV_KEY}" ] || [ ! -f "${PUB_KEY}" ]; then
   echo "[generate-keys] Generating Ed25519 keypair in ${SECRETS_DIR}..."
@@ -46,20 +47,29 @@ else
   echo "[generate-keys] Internal API token already exists."
 fi
 
+if [ ! -f "${ADMIN_WEB_SESSION_KEY}" ]; then
+  echo "[generate-keys] Generating 32-byte AES-256 admin web session key in ${ADMIN_WEB_SESSION_KEY}..."
+  openssl rand -base64 32 | tr -d '\r\n' > "${ADMIN_WEB_SESSION_KEY}"
+  echo "[generate-keys] Admin web session key generated successfully."
+else
+  echo "[generate-keys] Admin web session key already exists."
+fi
+
 # Ensure strict permissions: chmod 600 for private and symmetric keys, 644 for public key
 chmod 600 "${PRIV_KEY}"
 chmod 600 "${ENC_KEY}"
 chmod 600 "${ODOO_CREDS_KEY}"
 chmod 600 "${INTERNAL_API_TOKEN}"
+chmod 600 "${ADMIN_WEB_SESSION_KEY}"
 chmod 644 "${PUB_KEY}"
 
 # If running on an environment where the current user is not UID 1000 (e.g. CI runner UID 1001),
 # adjust ownership to 1000:1000 so the container user 'node' (UID 1000) can read them with chmod 600
 if [ "$(id -u)" != "1000" ]; then
   if command -v sudo >/dev/null 2>&1; then
-    sudo chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${INTERNAL_API_TOKEN}" "${PUB_KEY}" 2>/dev/null || true
+    sudo chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${INTERNAL_API_TOKEN}" "${ADMIN_WEB_SESSION_KEY}" "${PUB_KEY}" 2>/dev/null || true
   else
-    chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${INTERNAL_API_TOKEN}" "${PUB_KEY}" 2>/dev/null || true
+    chown 1000:1000 "${PRIV_KEY}" "${ENC_KEY}" "${ODOO_CREDS_KEY}" "${INTERNAL_API_TOKEN}" "${ADMIN_WEB_SESSION_KEY}" "${PUB_KEY}" 2>/dev/null || true
   fi
 fi
 

@@ -640,6 +640,14 @@ export class AuthService implements OnModuleInit {
       };
     }
 
+    let tenantName: string | undefined;
+    if (payload.tid) {
+      const t = await this.db.query.tenants.findFirst({
+        where: eq(schema.tenants.code, payload.tid),
+      });
+      tenantName = t?.displayName;
+    }
+
     return {
       account: {
         id: account.id,
@@ -648,6 +656,8 @@ export class AuthService implements OnModuleInit {
         isPlatformAdmin: false,
       },
       tenant: payload.tid,
+      tenantName: tenantName ?? payload.tid,
+      tenantDisplayName: tenantName ?? payload.tid,
       membershipId: payload.mid,
       roles: payload.roles ?? [],
       perms: payload.perms ?? [],

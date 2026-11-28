@@ -8,6 +8,7 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { RequireFeature } from '../features/require-feature.decorator';
 import { RequireDeviceSession } from '../auth/require-device-session.decorator';
@@ -26,6 +27,8 @@ interface AuthenticatedRequest extends Request {
   tenantCode?: string;
 }
 
+@ApiTags('Sync')
+@ApiBearerAuth()
 @Controller('v1/sync')
 export class SyncController {
   constructor(private readonly syncService: SyncService) {}
@@ -34,6 +37,8 @@ export class SyncController {
   @HttpCode(HttpStatus.OK)
   @RequireFeature('sync.offline')
   @RequireDeviceSession()
+  @ApiOperation({ summary: 'Push offline operations ledger batch from POS device' })
+  @ApiResponse({ status: 200, description: 'Batch operation results' })
   async push(@Req() req: AuthenticatedRequest, @Body() body: { operations: PushOperation[] }) {
     const user = req.user;
     const tenantCode = req.tenantCode || user.tid;
