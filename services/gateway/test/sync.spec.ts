@@ -5,6 +5,10 @@ import { OdooCredentialService } from '../src/odoo/odoo-credential.service';
 import { OdooService } from '../src/odoo/odoo.service';
 
 describe('TASK-006 (Round 2): SyncService Unit Tests', () => {
+  process.env.INTERNAL_API_TOKEN =
+    process.env.INTERNAL_API_TOKEN ||
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
   let service: SyncService;
   let platformService: PlatformService;
   let credentialService: OdooCredentialService;
