@@ -151,6 +151,13 @@ describe('Gateway endpoints (TASK-003)', () => {
     return jwt.sign(signingKey);
   }
 
+  describe('API Docs Swagger UI Gating (TASK-007 Round 2)', () => {
+    it('returns 404 for /docs by default when ENABLE_API_DOCS is not true', async () => {
+      const res = await request(app.getHttpServer()).get('/docs');
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('GET /health', () => {
     it('returns 200 and ok for all 5 components without needing token or @RequireFeature', async () => {
       jest.spyOn(healthService, 'checkPostgres').mockResolvedValue({ status: 'ok' });

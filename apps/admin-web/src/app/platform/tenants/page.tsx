@@ -49,8 +49,8 @@ export default function TenantsPage() {
         ) : tenants.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500">Chưa có doanh nghiệp nào</div>
         ) : (
-          <Table>
-            <TableHeader>
+          <Table className="w-full">
+            <TableHeader className="hidden md:table-header-group">
               <TableRow>
                 <TableHead>{t('platform.tenants.code')}</TableHead>
                 <TableHead>{t('platform.tenants.name')}</TableHead>
@@ -60,29 +60,40 @@ export default function TenantsPage() {
                 <TableHead className="text-right">{t('platform.tenants.actions')}</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className="block md:table-row-group divide-y divide-slate-200 md:divide-none">
               {tenants.map((tenant) => (
-                <TableRow key={tenant.id} data-testid={`tenant-row-${tenant.code}`}>
-                  <TableCell className="font-mono font-medium text-slate-900">
+                <TableRow
+                  key={tenant.id}
+                  data-testid={`tenant-row-${tenant.code}`}
+                  className="block md:table-row p-4 space-y-2 md:space-y-0 hover:bg-slate-50/50"
+                >
+                  <TableCell className="block md:table-cell font-mono font-medium text-slate-900 py-1 md:py-3.5">
+                    <span className="text-xs text-slate-500 font-normal md:hidden mr-2">Mã:</span>
                     {tenant.code}
                   </TableCell>
-                  <TableCell className="font-medium text-slate-900">
+                  <TableCell className="block md:table-cell font-medium text-slate-900 py-1 md:py-3.5">
+                    <span className="text-xs text-slate-500 font-normal md:hidden mr-2">Tên:</span>
                     {tenant.displayName}
                   </TableCell>
-                  <TableCell>
-                    <Badge variant={tenant.status === 'active' ? 'success' : 'warning'}>
-                      {tenant.status === 'active'
-                        ? t('platform.tenants.active')
-                        : t('platform.tenants.suspended')}
-                    </Badge>
+                  <TableCell className="block md:table-cell py-1 md:py-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 font-normal md:hidden">Trạng thái:</span>
+                      <Badge variant={tenant.status === 'active' ? 'success' : 'warning'}>
+                        {tenant.status === 'active'
+                          ? t('platform.tenants.active')
+                          : t('platform.tenants.suspended')}
+                      </Badge>
+                    </div>
                   </TableCell>
-                  <TableCell className="text-slate-600 font-medium">
+                  <TableCell className="block md:table-cell text-slate-600 font-medium py-1 md:py-3.5">
+                    <span className="text-xs text-slate-500 font-normal md:hidden mr-2">Thành viên:</span>
                     {tenant.memberCount ?? tenant.member_count ?? 0}
                   </TableCell>
-                  <TableCell className="text-xs text-slate-500">
+                  <TableCell className="block md:table-cell text-xs text-slate-500 py-1 md:py-3.5">
+                    <span className="text-xs text-slate-500 font-normal md:hidden mr-2">Ngày tạo:</span>
                     {tenant.createdAt ? new Date(tenant.createdAt).toLocaleDateString('vi-VN') : '-'}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="block md:table-cell text-left md:text-right pt-2 md:pt-3.5">
                     <Link
                       href={`/platform/tenants/${tenant.code}/features`}
                       className="inline-flex items-center text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline"

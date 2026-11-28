@@ -2,7 +2,10 @@ import * as crypto from 'crypto';
 import {
   encryptSession,
   decryptSession,
+  encryptAuthChallenge,
+  decryptAuthChallenge,
   SessionData,
+  AuthChallengeData,
 } from '../src/lib/session';
 
 describe('Admin Web Session & Cookie Encryption (ADR-008, TASK-007)', () => {
@@ -59,6 +62,37 @@ describe('Admin Web Session & Cookie Encryption (ADR-008, TASK-007)', () => {
   it('rejects malformed cookie string with null', () => {
     expect(decryptSession('malformed-cookie-value', validKey)).toBeNull();
     expect(decryptSession('', validKey)).toBeNull();
+  });
+
+  it('encrypts and decrypts auth challenge (MFA / tenant selection) correctly', () => {
+    const challengeData: AuthChallengeData = {
+      type: 'totp',
+      challengeToken: 'test-challenge-token-secret',
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    };
+
+    const encrypted = encryptAuthChallenge(challengeData, validKey);
+    expect(typeof encrypted).toBe('string');
+    expect(encrypted.split(':')).toHaveLength(3);
+
+    const decrypted = decryptAuthChallenge(encrypted, validKey);
+    expect(decrypted).not.toBeNull();
+    expect(decrypted?.type).toBe('totp');
+    if (decrypted?.type === 'totp') {
+      expect(decrypted.challengeToken).toBe('test-challenge-token-secret');
+    }
+  });
+
+  it('rejects expired auth challenge cookie with null', () => {
+    const expiredChallenge: AuthChallengeData = {
+      type: 'totp',
+      challengeToken: 'expired-token',
+      expiresAt: Date.now() - 1000, // already expired
+    };
+
+    const encrypted = encryptAuthChallenge(expiredChallenge, validKey);
+    const decrypted = decryptAuthChallenge(encrypted, validKey);
+    expect(decrypted).toBeNull();
   });
 
   it('throws fatal error if session key is missing or not 32 bytes', () => {

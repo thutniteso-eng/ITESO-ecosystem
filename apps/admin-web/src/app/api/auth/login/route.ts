@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { validateOrigin } from '@/lib/csrf';
-import { setSessionCookie } from '@/lib/session';
+import { setSessionCookie, setAuthChallengeCookie } from '@/lib/session';
 
 export async function POST(req: Request) {
   if (!validateOrigin(req)) {
@@ -25,19 +25,25 @@ export async function POST(req: Request) {
       return NextResponse.json(loginData, { status: loginRes.status });
     }
 
-    // Check if MFA is required (Super Admin)
+    // Check if MFA is required (Super Admin) - store challenge_token in encrypted HttpOnly cookie
     if (loginData.next === 'totp' || loginData.requires_mfa) {
+      await setAuthChallengeCookie({
+        type: 'totp',
+        challengeToken: loginData.challenge_token,
+      });
       return NextResponse.json({
         requires_mfa: true,
-        challenge_token: loginData.challenge_token,
       });
     }
 
-    // Check if tenant selection is required
+    // Check if tenant selection is required - store selection_token in encrypted HttpOnly cookie
     if (loginData.next === 'select_tenant' || loginData.requires_tenant_selection) {
+      await setAuthChallengeCookie({
+        type: 'select_tenant',
+        selectionToken: loginData.selection_token,
+      });
       return NextResponse.json({
         requires_tenant_selection: true,
-        selection_token: loginData.selection_token,
         tenants: loginData.tenants,
       });
     }
@@ -59,6 +65,7 @@ export async function POST(req: Request) {
       accessToken: access_token,
       refreshToken: refresh_token,
       expiresAt: Date.now() + (expires_in || 900) * 1000,
+      issuedAt: Date.now(),
       account: {
         id: meData.account.id,
         email: meData.account.email,

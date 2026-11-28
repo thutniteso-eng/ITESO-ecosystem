@@ -8,9 +8,7 @@ export default function LoginPage() {
   const [step, setStep] = React.useState<'credentials' | 'mfa' | 'tenant'>('credentials');
   const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
-  const [challengeToken, setChallengeToken] = React.useState('');
   const [otpCode, setOtpCode] = React.useState('');
-  const [selectionToken, setSelectionToken] = React.useState('');
   const [tenants, setTenants] = React.useState<Array<{ code: string; displayName?: string; name?: string }>>([]);
   const [selectedTenant, setSelectedTenant] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
@@ -40,14 +38,12 @@ export default function LoginPage() {
       }
 
       if (data.requires_mfa) {
-        setChallengeToken(data.challenge_token);
         setStep('mfa');
         setIsLoading(false);
         return;
       }
 
       if (data.requires_tenant_selection) {
-        setSelectionToken(data.selection_token);
         setTenants(data.tenants || []);
         if (data.tenants?.[0]?.code) {
           setSelectedTenant(data.tenants[0].code);
@@ -80,7 +76,6 @@ export default function LoginPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          challenge_token: challengeToken,
           code: otpCode,
         }),
       });
@@ -108,7 +103,6 @@ export default function LoginPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          selection_token: selectionToken,
           tenant_code: selectedTenant,
         }),
       });

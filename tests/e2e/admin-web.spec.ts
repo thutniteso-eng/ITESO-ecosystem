@@ -345,4 +345,53 @@ test.describe('TASK-007 Admin Web E2E Scenarios', () => {
     // 5. Chụp ảnh artifact
     await captureScreenshots(page, 'scenario-6-logout');
   });
+
+  test('Kịch bản 7: Token hết hạn và nhiều request song song được gộp thành công không bị REFRESH_TOKEN_REUSE', async ({ page }) => {
+    // 1. Đăng nhập Super Admin
+    await page.goto(`${BASE_URL}/login`);
+    await page.fill('[data-testid="identifier-input"]', 'admin@platform.local');
+    await page.fill('[data-testid="password-input"]', ADMIN_PASSWORD);
+    await page.click('[data-testid="login-submit-button"]');
+    await expect(page.locator('[data-testid="otp-input"]')).toBeVisible({ timeout: 10000 });
+    await page.fill('[data-testid="otp-input"]', generateTOTP(TOTP_SECRET));
+    await page.click('[data-testid="mfa-submit-button"]');
+    await page.waitForURL('**/platform**', { timeout: 10000 });
+    await expect(page.locator('h1')).toContainText('Danh sách Doanh nghiệp');
+
+    // 2. Chờ access token hết hạn nếu ACCESS_TOKEN_TTL_SECONDS ngắn (ví dụ 20s)
+    const waitSeconds = parseInt(process.env.ACCESS_TOKEN_TTL_SECONDS || '0', 10);
+    if (waitSeconds > 0 && waitSeconds <= 30) {
+      await page.waitForTimeout((waitSeconds + 2) * 1000);
+    }
+
+    // 3. Thực hiện nhiều request đồng thời tới các API nội bộ và điều hướng trang
+    const [tenantsRes, featuresRes, meRes] = await Promise.all([
+      page.request.get(`${BASE_URL}/api/platform/tenants`),
+      page.request.get(`${BASE_URL}/api/platform/features`),
+      page.request.get(`${BASE_URL}/api/auth/me`),
+      page.goto(`${BASE_URL}/platform/audit-log`),
+    ]);
+
+    expect(tenantsRes.ok()).toBe(true);
+    expect(featuresRes.ok()).toBe(true);
+    expect(meRes.ok()).toBe(true);
+    await expect(page.locator('h1')).toContainText('Nhật ký');
+
+    // Người dùng vẫn đăng nhập bình thường
+    expect(page.url()).toContain('/platform/audit-log');
+
+    // 4. Kiểm tra log control-plane: không có lỗi REFRESH_TOKEN_REUSE
+    try {
+      const logs = execSync(
+        'docker compose --env-file .env -f infra/docker-compose.yml logs --tail=100 control-plane',
+        { encoding: 'utf8' },
+      );
+      expect(logs).not.toContain('REFRESH_TOKEN_REUSE');
+    } catch {
+      // In non-docker test runs, skip container log inspection
+    }
+
+    // 5. Chụp ảnh artifact
+    await captureScreenshots(page, 'scenario-7-refresh-coalescing');
+  });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { validateOrigin } from '@/lib/csrf';
-import { setSessionCookie } from '@/lib/session';
+import { setSessionCookie, getAuthChallengeCookie, clearAuthChallengeCookie } from '@/lib/session';
 
 export async function POST(req: Request) {
   if (!validateOrigin(req)) {
@@ -9,13 +9,21 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
+    const challenge = await getAuthChallengeCookie();
+    if (!challenge || challenge.type !== 'select_tenant') {
+      return NextResponse.json(
+        { error: 'CHALLENGE_EXPIRED', message: 'Tenant selection challenge expired or not found. Please log in again.' },
+        { status: 400 },
+      );
+    }
+
     const cpUrl = (process.env.CONTROL_PLANE_URL || 'http://control-plane:3100').replace(/\/+$/, '');
 
     const res = await fetch(`${cpUrl}/v1/auth/select-tenant`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        selection_token: body.selection_token,
+        selection_token: challenge.selectionToken,
         tenant_code: body.tenant_code || body.tenant,
       }),
     });
@@ -24,6 +32,9 @@ export async function POST(req: Request) {
     if (!res.ok) {
       return NextResponse.json(data, { status: res.status });
     }
+
+    // Tenant selection succeeded - clear the temporary challenge cookie
+    await clearAuthChallengeCookie();
 
     const { access_token, refresh_token, expires_in } = data;
 
@@ -41,6 +52,7 @@ export async function POST(req: Request) {
       accessToken: access_token,
       refreshToken: refresh_token,
       expiresAt: Date.now() + (expires_in || 900) * 1000,
+      issuedAt: Date.now(),
       account: {
         id: meData.account.id,
         email: meData.account.email,

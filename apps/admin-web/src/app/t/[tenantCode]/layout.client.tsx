@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { usePathname } from 'next/navigation';
 import { AppLayout } from '@iteso/ui';
+import { BarChart3, Users, Smartphone, Settings } from 'lucide-react';
 import { t } from '@/lib/i18n';
 
 export function TenantLayoutClient({
@@ -21,28 +22,28 @@ export function TenantLayoutClient({
       label: t('nav.overview'),
       href: `/t/${tenantCode}`,
       active: pathname === `/t/${tenantCode}`,
-      icon: '📊',
+      icon: <BarChart3 className="w-4 h-4" />,
     },
     {
       label: t('nav.staff'),
       href: '#staff',
       badge: 'Sắp có',
       disabled: true,
-      icon: '👥',
+      icon: <Users className="w-4 h-4" />,
     },
     {
       label: t('nav.pos'),
       href: '#pos',
       badge: 'Sắp có',
       disabled: true,
-      icon: '📱',
+      icon: <Smartphone className="w-4 h-4" />,
     },
     {
       label: t('nav.settings'),
       href: '#settings',
       badge: 'Sắp có',
       disabled: true,
-      icon: '⚙️',
+      icon: <Settings className="w-4 h-4" />,
     },
   ];
 

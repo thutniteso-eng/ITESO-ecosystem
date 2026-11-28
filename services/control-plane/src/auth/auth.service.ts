@@ -41,6 +41,16 @@ export interface LoginResultTotp {
 
 export type LoginResult = LoginResultTokens | LoginResultSelectTenant | LoginResultTotp;
 
+function getAccessTokenTtlSeconds(): number {
+  if (process.env.ACCESS_TOKEN_TTL_SECONDS) {
+    const parsed = parseInt(process.env.ACCESS_TOKEN_TTL_SECONDS, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 900;
+}
+
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly db: NodePgDatabase<typeof schema>;
@@ -387,7 +397,7 @@ export class AuthService implements OnModuleInit {
       access_token: accessToken,
       refresh_token: rawRefreshToken,
       token_type: 'Bearer',
-      expires_in: 900,
+      expires_in: getAccessTokenTtlSeconds(),
     };
   }
 
@@ -591,7 +601,7 @@ export class AuthService implements OnModuleInit {
       access_token: newAccessToken,
       refresh_token: newRawRefreshToken,
       token_type: 'Bearer',
-      expires_in: 900,
+      expires_in: getAccessTokenTtlSeconds(),
     };
   }
 
@@ -755,7 +765,7 @@ export class AuthService implements OnModuleInit {
       access_token: accessToken,
       refresh_token: rawRefreshToken,
       token_type: 'Bearer',
-      expires_in: 900,
+      expires_in: getAccessTokenTtlSeconds(),
     };
   }
 }

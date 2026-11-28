@@ -157,3 +157,98 @@ infra/secrets/odoo_credentials.key
 infra/secrets/platform_encryption.key
 .env
 ```
+
+---
+
+## Vòng 2: Khắc phục 7 điểm kiểm duyệt của Claude
+
+### 1. Chi tiết thực hiện 7 điểm kiểm duyệt
+
+1. **[Quan trọng] Chuyển toàn bộ việc làm mới token vào Middleware & Gộp request đồng thời (Coalescing):**
+   - Đã loại bỏ hoàn toàn việc gọi làm mới token và ghi đè cookie trong `getSession()` (Server Component chỉ đọc phiên đã giải mã từ cookie / headers, không bao giờ ghi cookie).
+   - Tạo `apps/admin-web/src/middleware.ts`:
+     - Bắt các request khớp `/platform/*`, `/t/*`, `/api/*`.
+     - Kiểm tra token hết hạn hoặc sắp hết hạn qua `isTokenExpiring()`.
+     - Cơ chế **Coalescing**: sử dụng in-flight promise map và cache 30 giây theo `SHA-256(old_refresh_token)` để nhiều request song song từ trình duyệt chỉ kích hoạt đúng 1 lần gọi làm mới tới control-plane.
+     - Thiết lập cookie mới trên cả `request.cookies` (để Server Components hạ nguồn nhận được token mới) và `response.cookies` (gửi về cho trình duyệt).
+   - Thêm kịch bản Playwright E2E 7: chạy kiểm thử với `ACCESS_TOKEN_TTL_SECONDS=20`, đợi token hết hạn, mở song song nhiều trang và route API nội bộ. Kết quả: người dùng giữ nguyên phiên đăng nhập và log container control-plane không có `REFRESH_TOKEN_REUSE`.
+
+2. **Bỏ `'unsafe-eval'` khỏi CSP:**
+   - Trong `apps/admin-web/next.config.mjs`, loại bỏ `'unsafe-eval'` khỏi header `Content-Security-Policy`.
+   - Bổ sung unit test `apps/admin-web/test/csp.spec.ts` kiểm tra CSP không chứa `'unsafe-eval'`.
+
+3. **Bảo mật `challenge_token` và `selection_token` trong Cookie `iteso_auth_challenge`:**
+   - Route `/api/auth/login` không bao giờ trả `challenge_token` hay `selection_token` trong body JSON cho browser JS.
+   - Các token này được lưu trong cookie tạm thời `iteso_auth_challenge` (AES-256-GCM, HttpOnly, SameSite=Strict, TTL 5 phút).
+   - Trình duyệt chỉ gửi mã OTP 6 số (`/api/auth/mfa`) hoặc mã doanh nghiệp (`/api/auth/select-tenant`).
+   - Xóa cookie challenge ngay sau khi hoàn tất xác thực.
+   - Bổ sung unit test `apps/admin-web/test/auth-response.spec.ts` và `session.spec.ts` xác thực không rò rỉ token.
+
+4. **Tắt Swagger UI mặc định trên Gateway và Control-plane:**
+   - Cổng vào Swagger UI `/docs` trên Gateway và Control-plane chỉ được bật khi biến môi trường `ENABLE_API_DOCS=true`. Mặc định không cấu hình hoặc `false` sẽ trả về `404`.
+   - Đảm bảo lệnh CLI export OpenAPI (`export-openapi.ts`) không bị ảnh hưởng.
+   - Bổ sung unit test `services/gateway/test/app.spec.ts` kiểm tra `GET /docs` trả về `404`.
+
+5. **Giao diện điện thoại 390px hiển thị dạng thẻ dọc (Card layout) và tương tác tốt:**
+   - Dưới breakpoint `md`, các bảng (tính năng doanh nghiệp, danh sách doanh nghiệp, nhật ký) hiển thị dạng thẻ xếp dọc (card layout).
+   - Trên bảng tính năng doanh nghiệp, mỗi dòng hiển thị rõ mã tính năng, mô tả, huy hiệu trạng thái và ô chọn ghi đè `override-select` rộng rãi, dễ nhìn và bấm được trên màn hình 390px và 360px.
+   - Ảnh chụp kiểm thử khổ điện thoại 390px xác nhận ô chọn ghi đè hiển thị đầy đủ và tương tác thành công.
+
+6. **Biểu tượng menu SVG chuẩn với `lucide-react`:**
+   - Cài đặt `lucide-react` cho `apps/admin-web`.
+   - Thay thế toàn bộ ký tự emoji bằng SVG icons: `Building2`, `Zap`, `ClipboardList`, `BarChart3`, `Users`, `Smartphone`, `Settings`.
+   - Không còn tình trạng ô trống (▯) trên các môi trường thiếu font emoji.
+
+7. **Xóa ảnh chụp khỏi git tracking và cấu hình `.gitignore`:**
+   - Đã gỡ bỏ thư mục `artifacts/admin-web-screenshots/` khỏi git cache.
+   - Thêm `artifacts/` vào `.gitignore`. Ảnh screenshot chụp trong CI được đóng gói và tải lên qua `actions/upload-artifact@v4`.
+
+---
+
+### 2. Output kiểm thử thực tế Vòng 2
+
+#### 2.1. Admin Web Unit Tests (6 suites, 21 tests)
+```text
+$ pnpm --filter @iteso/admin-web test
+
+PASS test/coalescing.spec.ts
+PASS test/auth-response.spec.ts
+PASS test/csp.spec.ts
+PASS test/session.spec.ts
+PASS test/csrf.spec.ts
+PASS test/audit.spec.ts
+
+Test Suites: 6 passed, 6 total
+Tests:       21 passed, 21 total
+Snapshots:   0 total
+Time:        1.71 s
+Ran all test suites.
+```
+
+#### 2.2. Playwright E2E Tests (7 kịch bản đầu-cuối)
+```text
+$ ./node_modules/.bin/playwright test
+
+Running 7 tests using 1 worker
+
+  ✓ 1 Kịch bản 1: Super Admin đăng nhập thành công với TOTP (2.5s)
+  ✓ 2 Kịch bản 2: Super Admin nhập sai TOTP 6 số hiển thị lỗi tiếng Việt (1.8s)
+  ✓ 3 Kịch bản 3: Super Admin bật / tắt cờ pos.devices cho demo_fnb và kiểm tra Gateway + Audit log (3.1s)
+  ✓ 4 Kịch bản 4: owner@demo.local đăng nhập vào tenant và bị chặn khi vào /platform (2.1s)
+  ✓ 5 Kịch bản 5: Trình duyệt không lưu token trong localStorage, sessionStorage, document.cookie (2.1s)
+  ✓ 6 Kịch bản 6: Đăng xuất xóa cookie và nút Back không thể vào lại trang nội bộ (3.3s)
+  ✓ 7 Kịch bản 7: Token hết hạn và nhiều request song song được gộp thành công không bị REFRESH_TOKEN_REUSE (3.8s)
+
+  7 passed (20.5s)
+```
+
+#### 2.3. Danh sách Artifact ảnh chụp trong CI
+Artifact tải lên qua `upload-artifact@v4` với tên `admin-web-screenshots`:
+- `scenario-1-super-admin-desktop.png` & `scenario-1-super-admin-mobile.png`
+- `scenario-2-invalid-totp-desktop.png` & `scenario-2-invalid-totp-mobile.png`
+- `scenario-3-feature-toggle-desktop.png` & `scenario-3-feature-toggle-mobile.png` (Hiển thị thẻ tính năng & ô chọn trên 390px)
+- `scenario-4-tenant-owner-desktop.png` & `scenario-4-tenant-owner-mobile.png`
+- `scenario-5-token-security-desktop.png` & `scenario-5-token-security-mobile.png`
+- `scenario-6-logout-desktop.png` & `scenario-6-logout-mobile.png`
+- `scenario-7-refresh-coalescing-desktop.png` & `scenario-7-refresh-coalescing-mobile.png`
+

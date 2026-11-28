@@ -144,8 +144,8 @@ export default function AuditLogPage() {
             {t('platform.audit.empty')}
           </div>
         ) : (
-          <Table>
-            <TableHeader>
+          <Table className="w-full">
+            <TableHeader className="hidden md:table-header-group">
               <TableRow>
                 <TableHead>{t('platform.audit.time')}</TableHead>
                 <TableHead>{t('platform.audit.actor')}</TableHead>
@@ -154,22 +154,31 @@ export default function AuditLogPage() {
                 <TableHead>{t('platform.audit.note')}</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className="block md:table-row-group divide-y divide-slate-200 md:divide-none">
               {logs.map((log) => (
-                <TableRow key={log.id} data-testid={`audit-log-row-${log.id}`}>
-                  <TableCell className="text-xs font-mono text-slate-500 whitespace-nowrap">
+                <TableRow
+                  key={log.id}
+                  data-testid={`audit-log-row-${log.id}`}
+                  className="block md:table-row p-4 space-y-1.5 md:space-y-0 hover:bg-slate-50/50"
+                >
+                  <TableCell className="block md:table-cell text-xs font-mono text-slate-500 py-1 md:py-3.5">
+                    <span className="text-slate-400 font-sans md:hidden mr-2">Thời gian:</span>
                     {new Date(log.createdAt).toLocaleString('vi-VN')}
                   </TableCell>
-                  <TableCell className="text-xs font-semibold text-slate-800">
+                  <TableCell className="block md:table-cell text-xs font-semibold text-slate-800 py-1 md:py-3.5">
+                    <span className="text-slate-400 font-normal md:hidden mr-2">Người thực hiện:</span>
                     {log.actor}
                   </TableCell>
-                  <TableCell className="text-xs font-mono font-medium text-blue-600">
+                  <TableCell className="block md:table-cell text-xs font-mono font-medium text-blue-600 py-1 md:py-3.5">
+                    <span className="text-slate-400 font-sans font-normal md:hidden mr-2">Hành động:</span>
                     {log.action}
                   </TableCell>
-                  <TableCell className="text-xs font-mono text-slate-700">
+                  <TableCell className="block md:table-cell text-xs font-mono text-slate-700 py-1 md:py-3.5">
+                    <span className="text-slate-400 font-sans font-normal md:hidden mr-2">Đối tượng:</span>
                     {log.targetType}:{log.targetId}
                   </TableCell>
-                  <TableCell className="text-xs text-slate-500">
+                  <TableCell className="block md:table-cell text-xs text-slate-500 py-1 md:py-3.5">
+                    <span className="text-slate-400 md:hidden mr-2">Ghi chú:</span>
                     {log.note || '-'}
                   </TableCell>
                 </TableRow>

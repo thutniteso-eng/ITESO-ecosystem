@@ -105,8 +105,8 @@ export default function TenantFeaturesPage() {
             Đang tải danh sách tính năng doanh nghiệp...
           </div>
         ) : (
-          <Table>
-            <TableHeader>
+          <Table className="w-full">
+            <TableHeader className="hidden md:table-header-group">
               <TableRow>
                 <TableHead>Mã tính năng</TableHead>
                 <TableHead>Mô tả</TableHead>
@@ -114,7 +114,7 @@ export default function TenantFeaturesPage() {
                 <TableHead>Lựa chọn ghi đè</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className="block md:table-row-group divide-y divide-slate-200 md:divide-none">
               {features.map((f) => {
                 const selectValue =
                   f.tenantOverride === true
@@ -124,33 +124,43 @@ export default function TenantFeaturesPage() {
                     : 'default';
 
                 return (
-                  <TableRow key={f.key} data-testid={`tenant-feature-row-${f.key}`}>
-                    <TableCell className="font-mono text-sm font-medium text-slate-900">
+                  <TableRow
+                    key={f.key}
+                    data-testid={`tenant-feature-row-${f.key}`}
+                    className="block md:table-row p-4 space-y-2.5 md:space-y-0 hover:bg-slate-50/50"
+                  >
+                    <TableCell className="block md:table-cell font-mono text-sm font-semibold text-slate-900 py-1 md:py-3.5">
                       {f.key}
                     </TableCell>
-                    <TableCell className="text-sm text-slate-600">
+                    <TableCell className="block md:table-cell text-xs md:text-sm text-slate-600 py-1 md:py-3.5">
                       {f.description}
                     </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={f.effectiveEnabled ? 'success' : 'neutral'}
-                        data-testid={`effective-badge-${f.key}`}
-                      >
-                        {f.effectiveEnabled ? 'Đang Bật' : 'Đang Tắt'}
-                      </Badge>
+                    <TableCell className="block md:table-cell py-1 md:py-3.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500 font-medium md:hidden">Hiệu lực:</span>
+                        <Badge
+                          variant={f.effectiveEnabled ? 'success' : 'neutral'}
+                          data-testid={`effective-badge-${f.key}`}
+                        >
+                          {f.effectiveEnabled ? 'Đang Bật' : 'Đang Tắt'}
+                        </Badge>
+                      </div>
                     </TableCell>
-                    <TableCell>
-                      <select
-                        value={selectValue}
-                        disabled={updatingKey === f.key}
-                        onChange={(e) => handleOverrideChange(f.key, e.target.value)}
-                        className="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-medium bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        data-testid={`override-select-${f.key}`}
-                      >
-                        <option value="default">Theo mặc định</option>
-                        <option value="true">Bật</option>
-                        <option value="false">Tắt</option>
-                      </select>
+                    <TableCell className="block md:table-cell pt-2 md:pt-3.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between md:justify-start gap-1.5 md:gap-3">
+                        <span className="text-xs text-slate-700 font-semibold md:hidden">Lựa chọn ghi đè:</span>
+                        <select
+                          value={selectValue}
+                          disabled={updatingKey === f.key}
+                          onChange={(e) => handleOverrideChange(f.key, e.target.value)}
+                          className="w-full md:w-auto px-3 py-2 border border-slate-300 rounded-md text-xs font-medium bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          data-testid={`override-select-${f.key}`}
+                        >
+                          <option value="default">Theo mặc định</option>
+                          <option value="true">Bật</option>
+                          <option value="false">Tắt</option>
+                        </select>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
